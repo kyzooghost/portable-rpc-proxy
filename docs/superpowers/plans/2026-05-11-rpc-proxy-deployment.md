@@ -57,6 +57,7 @@ Write `.gitignore`:
 .env
 .env.*
 !.env.example
+.dev.vars*
 node_modules/
 npm-debug.log*
 coverage/
