@@ -1,0 +1,8 @@
+name = "rpc-proxy-free"
+main = "cloudflare/worker.mjs"
+compatibility_date = "2026-05-11"
+workers_dev = true
+
+# Set both sensitive values as Cloudflare secrets:
+# npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.free.example.toml
+# npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.free.example.toml
