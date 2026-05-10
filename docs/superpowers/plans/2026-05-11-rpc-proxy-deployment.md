@@ -12,7 +12,9 @@
 
 ## Workspace Note
 
-The current directory is not a git repository. If this project should have commits, Task 1 initializes git so the commit steps work. If this plan is executed inside a different repository, skip the `git init` command and use the existing repository.
+This workspace has been initialized as a git repository during execution. If this plan is reused in a fresh directory, Task 1 initializes git so the commit steps work. If this plan is executed inside a different repository, skip the `git init` command and use the existing repository.
+
+The checkboxes below are the original execution plan steps. They are kept as plan context rather than live task status; see the git history and README for the implemented state.
 
 ## File Structure
 
