@@ -6,9 +6,14 @@ set -eu
 UNSAFE_NGINX_CONFIG_MESSAGE='RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration'
 INVALID_UPSTREAM_AUTHORITY_MESSAGE='RPC_UPSTREAM_URL must use a DNS hostname with optional port'
 INVALID_UPSTREAM_PORT_MESSAGE='RPC_UPSTREAM_URL port must be a number from 1 to 65535'
+DNS_HOSTNAME_MAX_LENGTH=253
 
 validate_dns_hostname() {
   DNS_HOSTNAME_REST="$1"
+
+  if [ "${#DNS_HOSTNAME_REST}" -gt "$DNS_HOSTNAME_MAX_LENGTH" ]; then
+    return 1
+  fi
 
   case "$DNS_HOSTNAME_REST" in
     ''|.*|*.|*..*)

@@ -26,6 +26,7 @@ const ROUTE = Object.freeze({
 });
 
 const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+const DNS_HOSTNAME_MAX_LENGTH = 253;
 
 function getRequiredEnv(env, key) {
   const value = env?.[key];
@@ -42,6 +43,10 @@ function configError(message) {
 }
 
 function isDnsHostname(hostname) {
+  if (hostname.length > DNS_HOSTNAME_MAX_LENGTH) {
+    return false;
+  }
+
   return hostname.split(".").every((label) => DNS_LABEL_PATTERN.test(label));
 }
 

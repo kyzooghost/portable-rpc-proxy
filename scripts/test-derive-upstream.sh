@@ -45,6 +45,9 @@ assert_failure() {
 UNSAFE_NGINX_CONFIG_MESSAGE='RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration'
 INVALID_UPSTREAM_AUTHORITY_MESSAGE='RPC_UPSTREAM_URL must use a DNS hostname with optional port'
 INVALID_UPSTREAM_PORT_MESSAGE='RPC_UPSTREAM_URL port must be a number from 1 to 65535'
+printf -v DNS_LABEL_63 '%*s' 63 ''
+DNS_LABEL_63="${DNS_LABEL_63// /a}"
+OVERLENGTH_DNS_HOSTNAME="${DNS_LABEL_63}.${DNS_LABEL_63}.${DNS_LABEL_63}.${DNS_LABEL_63}"
 
 assert_equals "https|rpc-provider.invalid|rpc-provider.invalid|/v2/key" "$(derive "https://rpc-provider.invalid/v2/key")" "https URL with path"
 assert_equals "http|rpc-provider.invalid|rpc-provider.invalid|/" "$(derive "http://rpc-provider.invalid")" "http URL without path"
@@ -66,6 +69,7 @@ assert_failure "https://_bad.invalid/v2/key" "$INVALID_UPSTREAM_AUTHORITY_MESSAG
 assert_failure "https://-bad.invalid/v2/key" "$INVALID_UPSTREAM_AUTHORITY_MESSAGE" "leading hyphen upstream DNS label"
 assert_failure "https://bad-.invalid/v2/key" "$INVALID_UPSTREAM_AUTHORITY_MESSAGE" "trailing hyphen upstream DNS label"
 assert_failure "https://bad..invalid/v2/key" "$INVALID_UPSTREAM_AUTHORITY_MESSAGE" "empty upstream DNS label"
+assert_failure "https://${OVERLENGTH_DNS_HOSTNAME}/v2/key" "$INVALID_UPSTREAM_AUTHORITY_MESSAGE" "overlength upstream DNS hostname"
 assert_failure "https://rpc-provider.invalid/v2/key;error_log /dev/stdout info" "$UNSAFE_NGINX_CONFIG_MESSAGE" "nginx directive injection characters"
 assert_failure "https://rpc-provider.invalid/v2/key bad" "$UNSAFE_NGINX_CONFIG_MESSAGE" "nginx whitespace injection character"
 assert_failure "https://rpc-provider.invalid/v2/{key}" "$UNSAFE_NGINX_CONFIG_MESSAGE" "nginx brace injection characters"

@@ -10,6 +10,8 @@ const ENV = Object.freeze({
 });
 
 const INVALID_UPSTREAM_RESPONSE_TEXT = "Proxy upstream URL is invalid";
+const DNS_LABEL_63 = "a".repeat(63);
+const OVERLENGTH_DNS_HOSTNAME = [DNS_LABEL_63, DNS_LABEL_63, DNS_LABEL_63, DNS_LABEL_63].join(".");
 
 const INVALID_UPSTREAM_URL_CASES = Object.freeze([
   ["invalid scheme", "ftp://rpc-provider.invalid/v2/key"],
@@ -20,6 +22,7 @@ const INVALID_UPSTREAM_URL_CASES = Object.freeze([
   ["leading hyphen DNS label", "https://-bad.invalid/v2/key"],
   ["trailing hyphen DNS label", "https://bad-.invalid/v2/key"],
   ["empty DNS label", "https://bad..invalid/v2/key"],
+  ["overlength DNS hostname", `https://${OVERLENGTH_DNS_HOSTNAME}/v2/key`],
 ]);
 
 test("rejects requests to the wrong path without forwarding", async () => {
