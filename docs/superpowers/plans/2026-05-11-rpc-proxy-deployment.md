@@ -1,0 +1,993 @@
+# RPC Proxy Deployment Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build a minimal RPC proxy package with nginx Docker for VM deployment, Cloudflare Worker Free for no-Docker Cloudflare deployment, and Cloudflare Containers Paid as the Docker-on-Cloudflare path.
+
+**Architecture:** Keep `RPC_UPSTREAM_URL` as the single upstream input. nginx derives scheme, host, and path at container startup so SNI and `Host` are correct. Cloudflare Worker Free forwards directly with `fetch()`, while Cloudflare Containers validates the same secret path token before forwarding to the nginx container.
+
+**Tech Stack:** Docker, `nginx:1.27.5-alpine`, POSIX shell, Node.js built-in test runner, Cloudflare Workers, Wrangler `4.90.0`, `@cloudflare/containers` `0.3.3`.
+
+---
+
+## Workspace Note
+
+The current directory is not a git repository. If this project should have commits, Task 1 initializes git so the commit steps work. If this plan is executed inside a different repository, skip the `git init` command and use the existing repository.
+
+## File Structure
+
+- Create `.gitignore`: ignore local secrets, generated files, dependency folders, and logs.
+- Create `.env.example`: document placeholder-only runtime variables.
+- Create `package.json`: pin Wrangler and Cloudflare Containers versions and provide test/deploy scripts.
+- Create `docker/derive-upstream.sh`: derive nginx internals from `RPC_UPSTREAM_URL`.
+- Create `docker/docker-entrypoint.sh`: render nginx config then start nginx.
+- Create `docker/nginx.conf.template`: nginx reverse proxy template with SNI and upstream `Host`.
+- Create `Dockerfile`: build the nginx proxy image from a pinned nginx base image.
+- Create `docker-compose.example.yml`: local and VM deployment example.
+- Create `scripts/test-derive-upstream.sh`: shell test for URL derivation.
+- Create `cloudflare/worker.mjs`: Cloudflare Worker Free proxy.
+- Create `cloudflare/worker.test.mjs`: Node built-in tests for the Worker proxy.
+- Create `cloudflare/container-worker.mjs`: Cloudflare Containers Paid Worker entrypoint.
+- Create `wrangler.free.example.toml`: Worker Free deployment config template.
+- Create `wrangler.containers.example.toml`: Cloudflare Containers deployment config template.
+- Create `README.md`: deployment and verification runbook.
+
+### Task 1: Project Baseline
+
+**Files:**
+- Create: `.gitignore`
+- Create: `.env.example`
+- Create: `package.json`
+
+- [ ] **Step 1: Initialize git if needed**
+
+Run:
+
+```bash
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init
+```
+
+Expected: command exits `0`. In the current workspace, it initializes a new git repository.
+
+- [ ] **Step 2: Create `.gitignore`**
+
+Write `.gitignore`:
+
+```gitignore
+.env
+.env.*
+!.env.example
+node_modules/
+npm-debug.log*
+coverage/
+dist/
+.wrangler/
+docker/generated/
+*.log
+```
+
+- [ ] **Step 3: Create `.env.example`**
+
+Write `.env.example`:
+
+```dotenv
+RPC_UPSTREAM_URL=https://<rpc-provider-host>/<provider-api-path>
+RPC_PROXY_LISTEN_PORT=8545
+RPC_PROXY_PUBLISHED_PORT=8545
+RPC_PROXY_PATH_TOKEN=<long-random-route-token>
+ETH_RPC_URL=http://127.0.0.1:8545
+```
+
+- [ ] **Step 4: Create `package.json`**
+
+Write `package.json`:
+
+```json
+{
+  "name": "rpc-proxy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test cloudflare/*.test.mjs",
+    "deploy:worker:free": "wrangler deploy --config wrangler.free.example.toml",
+    "deploy:containers": "wrangler deploy --config wrangler.containers.example.toml",
+    "dry-run:worker:free": "wrangler deploy --dry-run --config wrangler.free.example.toml",
+    "dry-run:containers": "wrangler deploy --dry-run --config wrangler.containers.example.toml"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.3"
+  },
+  "devDependencies": {
+    "wrangler": "4.90.0"
+  }
+}
+```
+
+- [ ] **Step 5: Install pinned npm dependencies**
+
+Run:
+
+```bash
+npm install
+```
+
+Expected: `package-lock.json` is created and contains exact resolved versions for `wrangler` and `@cloudflare/containers`.
+
+- [ ] **Step 6: Commit baseline files**
+
+Run:
+
+```bash
+git add .gitignore .env.example package.json package-lock.json docs/superpowers/specs/2026-05-11-rpc-proxy-deployment-design.md docs/superpowers/plans/2026-05-11-rpc-proxy-deployment.md
+git commit -m "docs: define rpc proxy deployment plan"
+```
+
+Expected: commit succeeds. If the plan file is still being edited during execution, commit it at the end of the task instead.
+
+### Task 2: nginx Docker Proxy
+
+**Files:**
+- Create: `scripts/test-derive-upstream.sh`
+- Create: `docker/derive-upstream.sh`
+- Create: `docker/docker-entrypoint.sh`
+- Create: `docker/nginx.conf.template`
+- Create: `Dockerfile`
+- Create: `docker-compose.example.yml`
+
+- [ ] **Step 1: Write the failing shell test**
+
+Write `scripts/test-derive-upstream.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+assert_equals() {
+  local expected="$1"
+  local actual="$2"
+  local label="$3"
+
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'FAIL %s\nexpected: %s\nactual:   %s\n' "$label" "$expected" "$actual" >&2
+    exit 1
+  fi
+}
+
+derive() {
+  RPC_UPSTREAM_URL="$1" sh -c '. ./docker/derive-upstream.sh; printf "%s|%s|%s\n" "$RPC_UPSTREAM_SCHEME" "$RPC_UPSTREAM_HOST" "$RPC_UPSTREAM_PATH"'
+}
+
+assert_equals "https|rpc-provider.invalid|/v2/key" "$(derive "https://rpc-provider.invalid/v2/key")" "https URL with path"
+assert_equals "http|rpc-provider.invalid|/" "$(derive "http://rpc-provider.invalid")" "http URL without path"
+
+if RPC_UPSTREAM_URL="ftp://rpc-provider.invalid/path" sh -c '. ./docker/derive-upstream.sh' >/tmp/rpc-proxy-test.out 2>/tmp/rpc-proxy-test.err; then
+  printf 'FAIL invalid scheme unexpectedly passed\n' >&2
+  exit 1
+fi
+
+if ! rg -q "RPC_UPSTREAM_URL must start with http:// or https://" /tmp/rpc-proxy-test.err; then
+  printf 'FAIL invalid scheme error was not actionable\n' >&2
+  cat /tmp/rpc-proxy-test.err >&2
+  exit 1
+fi
+
+printf 'PASS derive-upstream\n'
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run:
+
+```bash
+bash scripts/test-derive-upstream.sh
+```
+
+Expected: FAIL because `./docker/derive-upstream.sh` does not exist yet.
+
+- [ ] **Step 3: Implement upstream derivation**
+
+Write `docker/derive-upstream.sh`:
+
+```sh
+#!/bin/sh
+set -eu
+
+: "${RPC_UPSTREAM_URL:?RPC_UPSTREAM_URL is required}"
+
+case "$RPC_UPSTREAM_URL" in
+  http://*|https://*) ;;
+  *)
+    printf 'RPC_UPSTREAM_URL must start with http:// or https://\n' >&2
+    exit 1
+    ;;
+esac
+
+RPC_UPSTREAM_SCHEME="${RPC_UPSTREAM_URL%%://*}"
+RPC_UPSTREAM_REST="${RPC_UPSTREAM_URL#*://}"
+
+case "$RPC_UPSTREAM_REST" in
+  */*)
+    RPC_UPSTREAM_HOST="${RPC_UPSTREAM_REST%%/*}"
+    RPC_UPSTREAM_PATH="/${RPC_UPSTREAM_REST#*/}"
+    ;;
+  *)
+    RPC_UPSTREAM_HOST="$RPC_UPSTREAM_REST"
+    RPC_UPSTREAM_PATH="/"
+    ;;
+esac
+
+if [ -z "$RPC_UPSTREAM_HOST" ]; then
+  printf 'RPC_UPSTREAM_URL must include a host\n' >&2
+  exit 1
+fi
+
+export RPC_UPSTREAM_SCHEME
+export RPC_UPSTREAM_HOST
+export RPC_UPSTREAM_PATH
+```
+
+- [ ] **Step 4: Run the derivation test to verify it passes**
+
+Run:
+
+```bash
+bash scripts/test-derive-upstream.sh
+```
+
+Expected: `PASS derive-upstream`.
+
+- [ ] **Step 5: Write nginx template and entrypoint**
+
+Write `docker/nginx.conf.template`:
+
+```nginx
+events {}
+
+http {
+    access_log off;
+    error_log /var/log/nginx/error.log warn;
+
+    server {
+        listen ${RPC_PROXY_LISTEN_PORT};
+
+        location / {
+            proxy_pass ${RPC_UPSTREAM_SCHEME}://${RPC_UPSTREAM_HOST}${RPC_UPSTREAM_PATH};
+            proxy_ssl_server_name on;
+            proxy_ssl_name ${RPC_UPSTREAM_HOST};
+            proxy_set_header Host ${RPC_UPSTREAM_HOST};
+            proxy_pass_request_headers on;
+            proxy_buffering off;
+            proxy_request_buffering off;
+        }
+    }
+}
+```
+
+Write `docker/docker-entrypoint.sh`:
+
+```sh
+#!/bin/sh
+set -eu
+
+. /usr/local/bin/derive-upstream.sh
+
+RPC_PROXY_LISTEN_PORT="${RPC_PROXY_LISTEN_PORT:-8545}"
+export RPC_PROXY_LISTEN_PORT
+
+envsubst '${RPC_PROXY_LISTEN_PORT} ${RPC_UPSTREAM_SCHEME} ${RPC_UPSTREAM_HOST} ${RPC_UPSTREAM_PATH}' \
+  < /etc/nginx/templates/nginx.conf.template \
+  > /etc/nginx/nginx.conf
+
+exec "$@"
+```
+
+- [ ] **Step 6: Write Docker and Compose files**
+
+Write `Dockerfile`:
+
+```Dockerfile
+FROM nginx:1.27.5-alpine
+
+COPY docker/derive-upstream.sh /usr/local/bin/derive-upstream.sh
+COPY docker/docker-entrypoint.sh /usr/local/bin/rpc-proxy-entrypoint.sh
+COPY docker/nginx.conf.template /etc/nginx/templates/nginx.conf.template
+
+RUN chmod 0755 /usr/local/bin/derive-upstream.sh /usr/local/bin/rpc-proxy-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/rpc-proxy-entrypoint.sh"]
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+Write `docker-compose.example.yml`:
+
+```yaml
+services:
+  rpc-proxy:
+    build:
+      context: .
+    image: rpc-proxy-nginx:local
+    restart: unless-stopped
+    environment:
+      RPC_UPSTREAM_URL: "${RPC_UPSTREAM_URL:?set RPC_UPSTREAM_URL in an uncommitted env file}"
+      RPC_PROXY_LISTEN_PORT: "${RPC_PROXY_LISTEN_PORT:-8545}"
+    ports:
+      - "${RPC_PROXY_PUBLISHED_PORT:-8545}:${RPC_PROXY_LISTEN_PORT:-8545}"
+```
+
+- [ ] **Step 7: Verify Docker config rendering**
+
+Run:
+
+```bash
+docker build -t rpc-proxy-nginx:local .
+```
+
+Expected: image builds successfully from `nginx:1.27.5-alpine`.
+
+Run:
+
+```bash
+docker run --rm -e RPC_UPSTREAM_URL=https://rpc-provider.invalid/v2/key rpc-proxy-nginx:local nginx -t
+```
+
+Expected: `nginx: configuration file /etc/nginx/nginx.conf test is successful`.
+
+Run:
+
+```bash
+docker run --rm rpc-proxy-nginx:local nginx -t
+```
+
+Expected: non-zero exit with `RPC_UPSTREAM_URL is required`.
+
+- [ ] **Step 8: Commit nginx proxy files**
+
+Run:
+
+```bash
+git add Dockerfile docker docker-compose.example.yml scripts/test-derive-upstream.sh
+git commit -m "feat: add nginx rpc proxy container"
+```
+
+Expected: commit succeeds.
+
+### Task 3: Cloudflare Worker Free Proxy
+
+**Files:**
+- Create: `cloudflare/worker.test.mjs`
+- Create: `cloudflare/worker.mjs`
+- Create: `wrangler.free.example.toml`
+
+- [ ] **Step 1: Write failing Worker tests**
+
+Write `cloudflare/worker.test.mjs`:
+
+```js
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { handleRequest } from "./worker.mjs";
+
+const ENV = Object.freeze({
+  RPC_UPSTREAM_URL: "https://rpc-provider.invalid/v2/key",
+  RPC_PROXY_PATH_TOKEN: "test-route-token",
+});
+
+test("rejects requests to the wrong path without forwarding", async () => {
+  let fetchCalled = false;
+  const request = new Request("https://proxy.invalid/rpc/wrong-token", {
+    method: "POST",
+    body: "{}",
+  });
+
+  const response = await handleRequest(request, ENV, async () => {
+    fetchCalled = true;
+    return new Response("unexpected");
+  });
+
+  assert.equal(response.status, 404);
+  assert.equal(await response.text(), "Not found");
+  assert.equal(fetchCalled, false);
+});
+
+test("forwards POST body to configured upstream URL", async () => {
+  const body = '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}';
+  const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": "198.51.100.10",
+    },
+    body,
+  });
+
+  let forwardedRequest;
+  const response = await handleRequest(request, ENV, async (upstreamRequest) => {
+    forwardedRequest = upstreamRequest;
+    return new Response('{"jsonrpc":"2.0","id":1,"result":"0x1"}', {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/json");
+  assert.equal(forwardedRequest.url, ENV.RPC_UPSTREAM_URL);
+  assert.equal(forwardedRequest.method, "POST");
+  assert.equal(forwardedRequest.headers.get("content-type"), "application/json");
+  assert.equal(forwardedRequest.headers.has("x-forwarded-for"), false);
+  assert.equal(await forwardedRequest.text(), body);
+});
+
+test("forwards GET without adding a request body", async () => {
+  const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+    method: "GET",
+  });
+
+  let forwardedRequest;
+  const response = await handleRequest(request, ENV, async (upstreamRequest) => {
+    forwardedRequest = upstreamRequest;
+    return new Response("upstream get response", { status: 400 });
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(await response.text(), "upstream get response");
+  assert.equal(forwardedRequest.method, "GET");
+  assert.equal(forwardedRequest.body, null);
+});
+
+test("returns config error when upstream is missing", async () => {
+  const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+    method: "POST",
+    body: "{}",
+  });
+
+  const response = await handleRequest(
+    request,
+    { RPC_PROXY_PATH_TOKEN: "test-route-token" },
+    async () => new Response("unexpected"),
+  );
+
+  assert.equal(response.status, 500);
+  assert.equal(await response.text(), "Proxy upstream is not configured");
+});
+
+test("returns bad gateway when upstream fetch throws", async () => {
+  const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+    method: "POST",
+    body: "{}",
+  });
+
+  const response = await handleRequest(request, ENV, async () => {
+    throw new Error("network failed");
+  });
+
+  assert.equal(response.status, 502);
+  assert.equal(await response.text(), "Bad gateway");
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run:
+
+```bash
+npm test
+```
+
+Expected: FAIL with module-not-found for `cloudflare/worker.mjs`.
+
+- [ ] **Step 3: Implement Worker proxy**
+
+Write `cloudflare/worker.mjs`:
+
+```js
+const ENV_KEYS = Object.freeze({
+  upstreamUrl: "RPC_UPSTREAM_URL",
+  pathToken: "RPC_PROXY_PATH_TOKEN",
+});
+
+const HTTP_STATUS = Object.freeze({
+  notFound: 404,
+  configError: 500,
+  badGateway: 502,
+});
+
+const RESPONSE_TEXT = Object.freeze({
+  notFound: "Not found",
+  missingUpstream: "Proxy upstream is not configured",
+  missingPathToken: "Proxy path token is not configured",
+  invalidUpstream: "Proxy upstream URL is invalid",
+  badGateway: "Bad gateway",
+});
+
+const BODYLESS_METHODS = new Set(["GET", "HEAD"]);
+
+const STRIPPED_HEADERS = Object.freeze([
+  "connection",
+  "content-length",
+  "cf-connecting-ip",
+  "cf-ipcountry",
+  "cf-ray",
+  "cf-visitor",
+  "host",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "x-forwarded-for",
+  "x-real-ip",
+]);
+
+function getRequiredEnv(env, key) {
+  const value = env?.[key];
+
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function configError(message) {
+  return new Response(message, { status: HTTP_STATUS.configError });
+}
+
+function validateUpstreamUrl(value) {
+  let url;
+
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return undefined;
+  }
+
+  return url.toString();
+}
+
+function expectedPath(pathToken) {
+  return `/rpc/${pathToken}`;
+}
+
+function copyForwardHeaders(headers) {
+  const forwardedHeaders = new Headers(headers);
+
+  for (const headerName of STRIPPED_HEADERS) {
+    forwardedHeaders.delete(headerName);
+  }
+
+  return forwardedHeaders;
+}
+
+export async function buildUpstreamRequest(request, upstreamUrl) {
+  const init = {
+    method: request.method,
+    headers: copyForwardHeaders(request.headers),
+    redirect: "manual",
+  };
+
+  if (!BODYLESS_METHODS.has(request.method)) {
+    init.body = await request.arrayBuffer();
+  }
+
+  return new Request(upstreamUrl, init);
+}
+
+export async function handleRequest(request, env, fetchImpl = fetch) {
+  const upstreamValue = getRequiredEnv(env, ENV_KEYS.upstreamUrl);
+  if (!upstreamValue) {
+    return configError(RESPONSE_TEXT.missingUpstream);
+  }
+
+  const pathToken = getRequiredEnv(env, ENV_KEYS.pathToken);
+  if (!pathToken) {
+    return configError(RESPONSE_TEXT.missingPathToken);
+  }
+
+  const upstreamUrl = validateUpstreamUrl(upstreamValue);
+  if (!upstreamUrl) {
+    return configError(RESPONSE_TEXT.invalidUpstream);
+  }
+
+  const requestUrl = new URL(request.url);
+  if (requestUrl.pathname !== expectedPath(pathToken)) {
+    return new Response(RESPONSE_TEXT.notFound, { status: HTTP_STATUS.notFound });
+  }
+
+  try {
+    const upstreamRequest = await buildUpstreamRequest(request, upstreamUrl);
+    return await fetchImpl(upstreamRequest);
+  } catch {
+    return new Response(RESPONSE_TEXT.badGateway, { status: HTTP_STATUS.badGateway });
+  }
+}
+
+export default {
+  fetch: handleRequest,
+};
+```
+
+- [ ] **Step 4: Run Worker tests to verify they pass**
+
+Run:
+
+```bash
+npm test
+```
+
+Expected: all `cloudflare/worker.test.mjs` tests pass.
+
+- [ ] **Step 5: Add Worker Free Wrangler template**
+
+Write `wrangler.free.example.toml`:
+
+```toml
+name = "rpc-proxy-free"
+main = "cloudflare/worker.mjs"
+compatibility_date = "2026-05-11"
+workers_dev = true
+
+# Set both values with:
+# npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.free.example.toml
+# npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.free.example.toml
+```
+
+- [ ] **Step 6: Dry-run Worker Free deployment**
+
+Run:
+
+```bash
+npm run dry-run:worker:free
+```
+
+Expected: Wrangler bundles the Worker without deploying.
+
+- [ ] **Step 7: Commit Worker Free files**
+
+Run:
+
+```bash
+git add cloudflare/worker.mjs cloudflare/worker.test.mjs wrangler.free.example.toml package.json package-lock.json
+git commit -m "feat: add cloudflare worker rpc proxy"
+```
+
+Expected: commit succeeds.
+
+### Task 4: Cloudflare Containers Paid Path
+
+**Files:**
+- Create: `cloudflare/container-worker.mjs`
+- Create: `wrangler.containers.example.toml`
+
+- [ ] **Step 1: Write Cloudflare Containers Worker**
+
+Write `cloudflare/container-worker.mjs`:
+
+```js
+import { Container, getContainer } from "@cloudflare/containers";
+
+const ENV_KEYS = Object.freeze({
+  upstreamUrl: "RPC_UPSTREAM_URL",
+  pathToken: "RPC_PROXY_PATH_TOKEN",
+  containerBinding: "RPC_PROXY_CONTAINER",
+});
+
+const CONTAINER = Object.freeze({
+  defaultPort: 8545,
+  instanceName: "rpc-proxy",
+  listenPort: "8545",
+  sleepAfter: "5m",
+});
+
+const HTTP_STATUS = Object.freeze({
+  notFound: 404,
+  configError: 500,
+});
+
+const RESPONSE_TEXT = Object.freeze({
+  notFound: "Not found",
+  missingUpstream: "Proxy upstream is not configured",
+  missingPathToken: "Proxy path token is not configured",
+});
+
+function getRequiredEnv(env, key) {
+  const value = env?.[key];
+
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function configError(message) {
+  return new Response(message, { status: HTTP_STATUS.configError });
+}
+
+function expectedPath(pathToken) {
+  return `/rpc/${pathToken}`;
+}
+
+function buildContainerRequest(request) {
+  const containerUrl = new URL(request.url);
+  containerUrl.pathname = "/";
+  containerUrl.search = "";
+
+  return new Request(containerUrl.toString(), request);
+}
+
+export class RpcProxyContainer extends Container {
+  defaultPort = CONTAINER.defaultPort;
+  requiredPorts = [CONTAINER.defaultPort];
+  sleepAfter = CONTAINER.sleepAfter;
+}
+
+export async function handleContainerRequest(request, env) {
+  const upstreamUrl = getRequiredEnv(env, ENV_KEYS.upstreamUrl);
+  if (!upstreamUrl) {
+    return configError(RESPONSE_TEXT.missingUpstream);
+  }
+
+  const pathToken = getRequiredEnv(env, ENV_KEYS.pathToken);
+  if (!pathToken) {
+    return configError(RESPONSE_TEXT.missingPathToken);
+  }
+
+  const requestUrl = new URL(request.url);
+  if (requestUrl.pathname !== expectedPath(pathToken)) {
+    return new Response(RESPONSE_TEXT.notFound, { status: HTTP_STATUS.notFound });
+  }
+
+  const container = getContainer(env[ENV_KEYS.containerBinding], CONTAINER.instanceName);
+
+  await container.startAndWaitForPorts({
+    startOptions: {
+      envVars: {
+        RPC_UPSTREAM_URL: upstreamUrl,
+        RPC_PROXY_LISTEN_PORT: CONTAINER.listenPort,
+      },
+    },
+  });
+
+  return container.fetch(buildContainerRequest(request));
+}
+
+export default {
+  fetch: handleContainerRequest,
+};
+```
+
+- [ ] **Step 2: Write Cloudflare Containers Wrangler template**
+
+Write `wrangler.containers.example.toml`:
+
+```toml
+name = "rpc-proxy-containers"
+main = "cloudflare/container-worker.mjs"
+compatibility_date = "2026-05-11"
+workers_dev = true
+
+[[containers]]
+class_name = "RpcProxyContainer"
+image = "./Dockerfile"
+max_instances = 1
+
+[[durable_objects.bindings]]
+name = "RPC_PROXY_CONTAINER"
+class_name = "RpcProxyContainer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RpcProxyContainer"]
+
+# Set both values with:
+# npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.containers.example.toml
+# npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.containers.example.toml
+```
+
+- [ ] **Step 3: Dry-run Cloudflare Containers deployment**
+
+Run:
+
+```bash
+npm run dry-run:containers
+```
+
+Expected: Wrangler validates and bundles the Worker. A real deploy requires Workers Paid, Docker running locally, and Cloudflare Containers availability on the account.
+
+- [ ] **Step 4: Commit Cloudflare Containers files**
+
+Run:
+
+```bash
+git add cloudflare/container-worker.mjs wrangler.containers.example.toml package.json package-lock.json
+git commit -m "feat: add cloudflare containers rpc proxy path"
+```
+
+Expected: commit succeeds.
+
+### Task 5: Deployment Runbook and Final Verification
+
+**Files:**
+- Create: `README.md`
+
+- [ ] **Step 1: Write deployment runbook**
+
+Write `README.md`:
+
+````markdown
+# RPC Proxy
+
+Minimal JSON-RPC proxy with three deployment paths:
+
+- nginx Docker on EC2 or any VM
+- Cloudflare Worker Free without Docker
+- Cloudflare Containers Paid with the nginx Docker image
+
+Do not commit real RPC URLs, API keys, EC2 IPs, Cloudflare account IDs, Worker routes, or route tokens.
+
+## Local nginx Docker
+
+Create an uncommitted `.env` from `.env.example` and replace placeholder values:
+
+```bash
+cp .env.example .env
+```
+
+Run locally:
+
+```bash
+docker compose --env-file .env -f docker-compose.example.yml up --build -d
+```
+
+Verify:
+
+```bash
+curl -X POST http://127.0.0.1:8545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
+
+Expected: JSON-RPC response with a hex `result`.
+
+## VM or EC2 nginx Docker
+
+Build and run the same Docker image on the VM. Restrict inbound access to the published proxy port with a firewall or cloud security group. Do not expose the port to all source IPs.
+
+Example command shape:
+
+```bash
+docker run -d --name rpc-proxy \
+  --env-file /path/to/uncommitted-rpc-proxy.env \
+  -p 8545:8545 \
+  --restart unless-stopped \
+  rpc-proxy-nginx:local
+```
+
+Set local clients to the VM proxy endpoint:
+
+```dotenv
+ETH_RPC_URL=http://<vm-host-or-ip>:8545
+```
+
+## Cloudflare Worker Free
+
+Set secrets:
+
+```bash
+npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.free.example.toml
+npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.free.example.toml
+```
+
+Deploy:
+
+```bash
+npm run deploy:worker:free
+```
+
+Set local clients to the Worker route:
+
+```dotenv
+ETH_RPC_URL=https://<worker-domain>/rpc/<route-token>
+```
+
+Cloudflare Workers Free is suitable for this proxy shape when usage stays below 100,000 requests per UTC day.
+
+## Cloudflare Containers Paid
+
+This path runs the nginx Docker image behind a Worker and Container binding. It requires Workers Paid and Docker running locally for deploys that build the image.
+
+Set secrets:
+
+```bash
+npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.containers.example.toml
+npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.containers.example.toml
+```
+
+Deploy:
+
+```bash
+npm run deploy:containers
+```
+
+Set local clients to the Containers-backed Worker route:
+
+```dotenv
+ETH_RPC_URL=https://<worker-domain>/rpc/<route-token>
+```
+
+## Verification
+
+Run local tests:
+
+```bash
+npm test
+bash scripts/test-derive-upstream.sh
+docker build -t rpc-proxy-nginx:local .
+npm run dry-run:worker:free
+npm run dry-run:containers
+```
+
+Scan for accidental concrete RPC values before committing:
+
+```bash
+rg -n "RPC_UPSTREAM_URL=https://[^<]|RPC_PROXY_PATH_TOKEN=[^<]|/v2/[A-Za-z0-9_-]{10,}" \
+  .env.example Dockerfile docker docker-compose.example.yml cloudflare wrangler.free.example.toml wrangler.containers.example.toml package.json
+```
+
+Expected: no matches for real provider hosts, real upstream URLs, or real route tokens.
+
+## References
+
+- Cloudflare Workers pricing: https://developers.cloudflare.com/workers/platform/pricing/
+- Cloudflare Workers limits: https://developers.cloudflare.com/workers/platform/limits/
+- Cloudflare Containers getting started: https://developers.cloudflare.com/containers/get-started/
+- Cloudflare Containers interface: https://developers.cloudflare.com/containers/container-class/
+- Cloudflare Containers env vars and secrets: https://developers.cloudflare.com/containers/examples/env-vars-and-secrets/
+````
+
+- [ ] **Step 2: Run full verification**
+
+Run:
+
+```bash
+npm test
+bash scripts/test-derive-upstream.sh
+docker build -t rpc-proxy-nginx:local .
+npm run dry-run:worker:free
+npm run dry-run:containers
+rg -n "RPC_UPSTREAM_URL=https://[^<]|RPC_PROXY_PATH_TOKEN=[^<]|/v2/[A-Za-z0-9_-]{10,}" \
+  .env.example Dockerfile docker docker-compose.example.yml cloudflare wrangler.free.example.toml wrangler.containers.example.toml package.json
+```
+
+Expected:
+
+- `npm test` passes.
+- `bash scripts/test-derive-upstream.sh` prints `PASS derive-upstream`.
+- Docker image builds.
+- Wrangler dry-runs finish without deploying.
+- `rg` returns no matches for real provider hosts, real upstream URLs, or real route tokens.
+
+- [ ] **Step 3: Commit runbook**
+
+Run:
+
+```bash
+git add README.md
+git commit -m "docs: add rpc proxy deployment runbook"
+```
+
+Expected: commit succeeds.
+
+## Self-Review Checklist
+
+- Spec coverage: nginx Docker, Cloudflare Worker Free, Cloudflare Containers Paid, one `RPC_UPSTREAM_URL`, secret path token, GET pass-through, no committed real URLs, SNI, and verification are covered.
+- Placeholder scan: the plan uses explicit placeholder values with `<...>` where secrets or account-specific values belong. It does not include a real upstream RPC URL or provider API key.
+- Type consistency: Worker env names are `RPC_UPSTREAM_URL` and `RPC_PROXY_PATH_TOKEN` throughout. Container binding is `RPC_PROXY_CONTAINER` throughout. nginx listen port is `8545` by default.
