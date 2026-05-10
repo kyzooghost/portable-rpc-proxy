@@ -6,7 +6,7 @@ set -eu
 UNSAFE_NGINX_CONFIG_MESSAGE='RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration'
 
 case "$RPC_UPSTREAM_URL" in
-  *";"*|*"{"*|*"}"*|*[[:space:]]*)
+  *";"*|*"{"*|*"}"*|*'$'*|*[[:space:]]*)
     printf '%s\n' "$UNSAFE_NGINX_CONFIG_MESSAGE" >&2
     exit 1
     ;;
