@@ -350,6 +350,7 @@ Write `.dockerignore`:
 .git
 node_modules/
 npm-debug.log*
+logs/
 coverage/
 dist/
 .wrangler/
