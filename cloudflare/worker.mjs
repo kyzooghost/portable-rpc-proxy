@@ -23,9 +23,12 @@ const STRIPPED_HEADERS = Object.freeze([
   "connection",
   "content-length",
   "cf-connecting-ip",
+  "cf-connecting-ipv6",
   "cf-ipcountry",
+  "cf-pseudo-ipv4",
   "cf-ray",
   "cf-visitor",
+  "forwarded",
   "host",
   "keep-alive",
   "proxy-authenticate",
@@ -33,6 +36,7 @@ const STRIPPED_HEADERS = Object.freeze([
   "te",
   "trailer",
   "transfer-encoding",
+  "true-client-ip",
   "upgrade",
   "x-forwarded-for",
   "x-real-ip",
@@ -74,9 +78,14 @@ function expectedPath(pathToken) {
 
 function copyForwardHeaders(headers) {
   const forwardedHeaders = new Headers(headers);
+  const connectionHeader = headers.get("connection");
 
   for (const headerName of STRIPPED_HEADERS) {
     forwardedHeaders.delete(headerName);
+  }
+
+  for (const headerName of connectionHeader?.split(",") ?? []) {
+    forwardedHeaders.delete(headerName.trim().toLowerCase());
   }
 
   return forwardedHeaders;

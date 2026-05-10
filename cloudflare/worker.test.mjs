@@ -54,6 +54,41 @@ test("forwards POST body to configured upstream URL", async () => {
   assert.equal(await forwardedRequest.text(), body);
 });
 
+test("strips hop-by-hop and IP-identifying headers from forwarded requests", async () => {
+  const strippedHeaders = Object.freeze([
+    ["connection", "x-custom-hop, upgrade"],
+    ["x-custom-hop", "remove-me"],
+    ["upgrade", "websocket"],
+    ["forwarded", "for=198.51.100.10"],
+    ["true-client-ip", "198.51.100.10"],
+    ["cf-connecting-ipv6", "2001:db8::1"],
+    ["cf-pseudo-ipv4", "198.51.100.11"],
+    ["x-forwarded-for", "198.51.100.10"],
+    ["x-real-ip", "198.51.100.10"],
+    ["cf-connecting-ip", "198.51.100.10"],
+  ]);
+  const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...Object.fromEntries(strippedHeaders),
+    },
+    body: "{}",
+  });
+
+  let forwardedRequest;
+  const response = await handleRequest(request, ENV, async (upstreamRequest) => {
+    forwardedRequest = upstreamRequest;
+    return new Response("upstream response");
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(forwardedRequest.headers.get("content-type"), "application/json");
+  for (const [headerName] of strippedHeaders) {
+    assert.equal(forwardedRequest.headers.has(headerName), false, `${headerName} should not be forwarded`);
+  }
+});
+
 test("forwards GET without adding a request body", async () => {
   const request = new Request("https://proxy.invalid/rpc/test-route-token", {
     method: "GET",
