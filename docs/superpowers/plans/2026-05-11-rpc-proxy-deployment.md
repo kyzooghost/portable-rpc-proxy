@@ -1032,9 +1032,11 @@ main = "cloudflare/worker.mjs"
 compatibility_date = "2026-05-11"
 workers_dev = true
 
-# Set both sensitive values as Cloudflare secrets:
-# npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.free.example.toml
-# npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.free.example.toml
+[secrets]
+required = ["RPC_UPSTREAM_URL", "RPC_PROXY_PATH_TOKEN"]
+
+# First deploy can upload both sensitive values atomically with:
+# npx wrangler deploy --config wrangler.free.example.toml --secrets-file .env.cloudflare.free
 ```
 
 - [ ] **Step 6: Dry-run Worker Free deployment**
@@ -1097,6 +1099,9 @@ main = "cloudflare/container-worker.mjs"
 compatibility_date = "2026-05-11"
 workers_dev = true
 
+[secrets]
+required = ["RPC_UPSTREAM_URL", "RPC_PROXY_PATH_TOKEN"]
+
 [[containers]]
 class_name = "RpcProxyContainer"
 image = "./Dockerfile"
@@ -1110,9 +1115,8 @@ class_name = "RpcProxyContainer"
 tag = "v1"
 new_sqlite_classes = ["RpcProxyContainer"]
 
-# Set both sensitive values as Cloudflare secrets:
-# npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.containers.example.toml
-# npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.containers.example.toml
+# First deploy can upload both sensitive values atomically with:
+# npx wrangler deploy --config wrangler.containers.example.toml --secrets-file .env.cloudflare.containers
 ```
 
 - [ ] **Step 4: Verify Cloudflare Containers Worker and nginx health routing**
@@ -1205,18 +1209,20 @@ ETH_RPC_URL=http://<vm-host-or-ip>:8545
 
 ## Cloudflare Worker Free
 
-Set secrets:
+For the first deploy, put both Cloudflare secrets in an uncommitted `.env.cloudflare.free` file:
 
-```bash
-npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.free.example.toml
-npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.free.example.toml
+```dotenv
+RPC_UPSTREAM_URL=https://<rpc-provider-host>/<provider-api-path>
+RPC_PROXY_PATH_TOKEN=<long-random-route-token>
 ```
 
-Deploy:
+Deploy once with the secrets file so both secrets are uploaded with the Worker version:
 
 ```bash
-npm run deploy:worker:free
+npx wrangler deploy --config wrangler.free.example.toml --secrets-file .env.cloudflare.free
 ```
+
+The Wrangler config declares both secrets as required. Later deploys can use `npm run deploy:worker:free` after those secrets are configured. `wrangler secret put` is also valid for rotating an existing secret, but Cloudflare documents that it creates and deploys a new Worker version immediately.
 
 Set local clients to the Worker route:
 
@@ -1230,18 +1236,20 @@ Cloudflare Workers Free is suitable for this proxy shape when usage stays below 
 
 This path runs the nginx Docker image behind a Worker and Container binding. It requires Workers Paid and Docker running locally for deploys that build the image.
 
-Set secrets:
+For the first deploy, put both Cloudflare secrets in an uncommitted `.env.cloudflare.containers` file:
 
-```bash
-npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.containers.example.toml
-npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.containers.example.toml
+```dotenv
+RPC_UPSTREAM_URL=https://<rpc-provider-host>/<provider-api-path>
+RPC_PROXY_PATH_TOKEN=<long-random-route-token>
 ```
 
-Deploy:
+Deploy once with the secrets file so both secrets are uploaded with the Worker version:
 
 ```bash
-npm run deploy:containers
+npx wrangler deploy --config wrangler.containers.example.toml --secrets-file .env.cloudflare.containers
 ```
+
+The Wrangler config declares both secrets as required. Later deploys can use `npm run deploy:containers` after those secrets are configured. `wrangler secret put` is also valid for rotating an existing secret, but Cloudflare documents that it creates and deploys a new Worker version immediately.
 
 Set local clients to the Containers-backed Worker route:
 
