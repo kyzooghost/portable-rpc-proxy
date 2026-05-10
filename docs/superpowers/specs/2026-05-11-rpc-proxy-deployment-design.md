@@ -39,8 +39,10 @@ This path is expected to fit personal CLI and planner usage on Cloudflare Worker
 
 Expected runtime inputs:
 
-- `RPC_UPSTREAM_URL`: full upstream provider URL, stored as a Cloudflare secret or variable.
-- `RPC_PROXY_PATH_TOKEN`: random route token stored as a Cloudflare secret or variable.
+- `RPC_UPSTREAM_URL`: full upstream provider URL, stored as a Cloudflare secret because it can include a provider API key path segment.
+- `RPC_PROXY_PATH_TOKEN`: random route token stored as a Cloudflare secret because it is the Worker access-control credential.
+
+These Cloudflare values must not be placed in plain-text Wrangler configuration.
 
 Client-facing URL shape:
 

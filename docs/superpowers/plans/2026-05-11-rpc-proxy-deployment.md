@@ -634,7 +634,7 @@ main = "cloudflare/worker.mjs"
 compatibility_date = "2026-05-11"
 workers_dev = true
 
-# Set both values with:
+# Set both sensitive values as Cloudflare secrets:
 # npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.free.example.toml
 # npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.free.example.toml
 ```
@@ -787,7 +787,7 @@ class_name = "RpcProxyContainer"
 tag = "v1"
 new_sqlite_classes = ["RpcProxyContainer"]
 
-# Set both values with:
+# Set both sensitive values as Cloudflare secrets:
 # npx wrangler secret put RPC_UPSTREAM_URL --config wrangler.containers.example.toml
 # npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.containers.example.toml
 ```
