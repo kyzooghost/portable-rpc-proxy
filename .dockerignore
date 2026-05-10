@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.dev.vars*
+.git
+node_modules/
+npm-debug.log*
+coverage/
+dist/
+.wrangler/
+docker/generated/
+*.log
