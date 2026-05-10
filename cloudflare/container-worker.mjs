@@ -1,3 +1,5 @@
+import { HEADER_NAMES, PROXY_STRIPPED_REQUEST_HEADERS } from "./proxy-headers.mjs";
+
 async function loadContainersPackage() {
   try {
     return await import("@cloudflare/containers");
@@ -50,41 +52,11 @@ const RESPONSE_TEXT = Object.freeze({
   badGateway: "Bad gateway",
 });
 
-const HEADER_NAMES = Object.freeze({
-  connection: "connection",
-});
-
 const STRIPPED_HEADERS = Object.freeze([
-  "authorization",
-  HEADER_NAMES.connection,
-  "cf-container-target-port",
-  "content-length",
-  "cookie",
-  "cf-connecting-ip",
-  "cf-connecting-ipv6",
-  "cf-ipcountry",
-  "cf-pseudo-ipv4",
-  "cf-ray",
-  "cf-visitor",
-  "forwarded",
-  "host",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "true-client-ip",
-  "upgrade",
-  "via",
-  "x-client-ip",
-  "x-cluster-client-ip",
-  "x-forwarded-for",
-  "x-forwarded-host",
-  "x-forwarded-port",
-  "x-forwarded-proto",
-  "x-forwarded-server",
-  "x-real-ip",
+  HEADER_NAMES.authorization,
+  HEADER_NAMES.cfContainerTargetPort,
+  HEADER_NAMES.cookie,
+  ...PROXY_STRIPPED_REQUEST_HEADERS,
 ]);
 
 function getRequiredEnv(env, key) {

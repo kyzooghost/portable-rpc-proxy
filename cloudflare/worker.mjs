@@ -1,3 +1,5 @@
+import { HEADER_NAMES, PROXY_STRIPPED_REQUEST_HEADERS } from "./proxy-headers.mjs";
+
 const ENV_KEYS = Object.freeze({
   upstreamUrl: "RPC_UPSTREAM_URL",
   pathToken: "RPC_PROXY_PATH_TOKEN",
@@ -18,29 +20,6 @@ const RESPONSE_TEXT = Object.freeze({
 });
 
 const BODYLESS_METHODS = new Set(["GET", "HEAD"]);
-
-const STRIPPED_HEADERS = Object.freeze([
-  "connection",
-  "content-length",
-  "cf-connecting-ip",
-  "cf-connecting-ipv6",
-  "cf-ipcountry",
-  "cf-pseudo-ipv4",
-  "cf-ray",
-  "cf-visitor",
-  "forwarded",
-  "host",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "true-client-ip",
-  "upgrade",
-  "x-forwarded-for",
-  "x-real-ip",
-]);
 
 function getRequiredEnv(env, key) {
   const value = env?.[key];
@@ -78,9 +57,9 @@ function expectedPath(pathToken) {
 
 function copyForwardHeaders(headers) {
   const forwardedHeaders = new Headers(headers);
-  const connectionHeader = headers.get("connection");
+  const connectionHeader = headers.get(HEADER_NAMES.connection);
 
-  for (const headerName of STRIPPED_HEADERS) {
+  for (const headerName of PROXY_STRIPPED_REQUEST_HEADERS) {
     forwardedHeaders.delete(headerName);
   }
 
