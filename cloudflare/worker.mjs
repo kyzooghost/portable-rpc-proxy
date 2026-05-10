@@ -25,6 +25,8 @@ const ROUTE = Object.freeze({
   emptySearch: "",
 });
 
+const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
 function getRequiredEnv(env, key) {
   const value = env?.[key];
 
@@ -39,6 +41,10 @@ function configError(message) {
   return new Response(message, { status: HTTP_STATUS.configError });
 }
 
+function isDnsHostname(hostname) {
+  return hostname.split(".").every((label) => DNS_LABEL_PATTERN.test(label));
+}
+
 function validateUpstreamUrl(value) {
   let url;
 
@@ -49,6 +55,14 @@ function validateUpstreamUrl(value) {
   }
 
   if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return undefined;
+  }
+
+  if (url.username || url.password || url.hash) {
+    return undefined;
+  }
+
+  if (!isDnsHostname(url.hostname)) {
     return undefined;
   }
 

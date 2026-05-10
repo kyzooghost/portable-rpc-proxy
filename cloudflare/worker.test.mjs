@@ -9,6 +9,19 @@ const ENV = Object.freeze({
   RPC_PROXY_PATH_TOKEN: "test-route-token",
 });
 
+const INVALID_UPSTREAM_RESPONSE_TEXT = "Proxy upstream URL is invalid";
+
+const INVALID_UPSTREAM_URL_CASES = Object.freeze([
+  ["invalid scheme", "ftp://rpc-provider.invalid/v2/key"],
+  ["userinfo", "https://user:pass@rpc-provider.invalid/v2/key"],
+  ["fragment", "https://rpc-provider.invalid/v2/key#frag"],
+  ["IPv6 literal", "https://[2001:db8::1]/v2/key"],
+  ["underscore DNS label", "https://_bad.invalid/v2/key"],
+  ["leading hyphen DNS label", "https://-bad.invalid/v2/key"],
+  ["trailing hyphen DNS label", "https://bad-.invalid/v2/key"],
+  ["empty DNS label", "https://bad..invalid/v2/key"],
+]);
+
 test("rejects requests to the wrong path without forwarding", async () => {
   let fetchCalled = false;
   const request = new Request("https://proxy.invalid/rpc/wrong-token", {
@@ -189,6 +202,29 @@ test("returns config error when upstream is missing", async () => {
 
   assert.equal(response.status, 500);
   assert.equal(await response.text(), "Proxy upstream is not configured");
+});
+
+test("returns config error for invalid upstream URLs without forwarding", async () => {
+  for (const [label, upstreamUrl] of INVALID_UPSTREAM_URL_CASES) {
+    let fetchCalled = false;
+    const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+      method: "POST",
+      body: "{}",
+    });
+
+    const response = await handleRequest(
+      request,
+      { ...ENV, RPC_UPSTREAM_URL: upstreamUrl },
+      async () => {
+        fetchCalled = true;
+        return new Response("unexpected");
+      },
+    );
+
+    assert.equal(response.status, 500, label);
+    assert.equal(await response.text(), INVALID_UPSTREAM_RESPONSE_TEXT, label);
+    assert.equal(fetchCalled, false, label);
+  }
 });
 
 test("returns bad gateway when upstream fetch throws", async () => {

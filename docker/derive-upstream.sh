@@ -7,6 +7,43 @@ UNSAFE_NGINX_CONFIG_MESSAGE='RPC_UPSTREAM_URL contains characters that are unsaf
 INVALID_UPSTREAM_AUTHORITY_MESSAGE='RPC_UPSTREAM_URL must use a DNS hostname with optional port'
 INVALID_UPSTREAM_PORT_MESSAGE='RPC_UPSTREAM_URL port must be a number from 1 to 65535'
 
+validate_dns_hostname() {
+  DNS_HOSTNAME_REST="$1"
+
+  case "$DNS_HOSTNAME_REST" in
+    ''|.*|*.|*..*)
+      return 1
+      ;;
+  esac
+
+  while :; do
+    case "$DNS_HOSTNAME_REST" in
+      *.*)
+        DNS_HOSTNAME_LABEL="${DNS_HOSTNAME_REST%%.*}"
+        DNS_HOSTNAME_REST="${DNS_HOSTNAME_REST#*.}"
+        ;;
+      *)
+        DNS_HOSTNAME_LABEL="$DNS_HOSTNAME_REST"
+        DNS_HOSTNAME_REST=''
+        ;;
+    esac
+
+    case "$DNS_HOSTNAME_LABEL" in
+      ''|-*|*-|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-]*)
+        return 1
+        ;;
+    esac
+
+    if [ "${#DNS_HOSTNAME_LABEL}" -gt 63 ]; then
+      return 1
+    fi
+
+    if [ -z "$DNS_HOSTNAME_REST" ]; then
+      return 0
+    fi
+  done
+}
+
 case "$RPC_UPSTREAM_URL" in
   *";"*|*"{"*|*"}"*|*'$'*|*[[:space:]]*)
     printf '%s\n' "$UNSAFE_NGINX_CONFIG_MESSAGE" >&2
@@ -114,6 +151,11 @@ esac
 
 if [ -z "$RPC_UPSTREAM_TLS_HOST" ]; then
   printf 'RPC_UPSTREAM_URL must include a host\n' >&2
+  exit 1
+fi
+
+if ! validate_dns_hostname "$RPC_UPSTREAM_TLS_HOST"; then
+  printf '%s\n' "$INVALID_UPSTREAM_AUTHORITY_MESSAGE" >&2
   exit 1
 fi
 
