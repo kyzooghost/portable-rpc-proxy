@@ -40,12 +40,14 @@ const ROUTE = Object.freeze({
 const HTTP_STATUS = Object.freeze({
   notFound: 404,
   configError: 500,
+  badGateway: 502,
 });
 
 const RESPONSE_TEXT = Object.freeze({
   notFound: "Not found",
   missingUpstream: "Proxy upstream is not configured",
   missingPathToken: "Proxy path token is not configured",
+  badGateway: "Bad gateway",
 });
 
 const HEADER_NAMES = Object.freeze({
@@ -157,17 +159,21 @@ export async function handleContainerRequest(request, env, dependencies = {}) {
 
   const container = getContainerImpl(env[ENV_KEYS.containerBinding], CONTAINER.instanceName);
 
-  await container.startAndWaitForPorts({
-    startOptions: {
-      envVars: {
-        [ENV_KEYS.upstreamUrl]: upstreamUrl,
-        [ENV_KEYS.listenPort]: CONTAINER.listenPort,
+  try {
+    await container.startAndWaitForPorts({
+      startOptions: {
+        envVars: {
+          [ENV_KEYS.upstreamUrl]: upstreamUrl,
+          [ENV_KEYS.listenPort]: CONTAINER.listenPort,
+        },
       },
-    },
-    ports: CONTAINER.defaultPort,
-  });
+      ports: CONTAINER.defaultPort,
+    });
 
-  return container.fetch(buildContainerRequest(request));
+    return await container.fetch(buildContainerRequest(request));
+  } catch {
+    return new Response(RESPONSE_TEXT.badGateway, { status: HTTP_STATUS.badGateway });
+  }
 }
 
 export default {

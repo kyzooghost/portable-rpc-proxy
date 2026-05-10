@@ -1073,6 +1073,7 @@ Write `cloudflare/container-worker.test.mjs` with Node built-in tests and mocked
 - Correct path with query string returns 404 and does not call `getContainer`.
 - Missing upstream or path token returns 500 without container lookup.
 - Valid requests start the named `rpc-proxy` container with `RPC_UPSTREAM_URL` and `RPC_PROXY_LISTEN_PORT=8545`, wait on port 8545, rewrite the container request to `/` with no query string, preserve method and body, and call `container.fetch`.
+- Container startup and `container.fetch()` errors return generic `502 Bad gateway` responses without exposing thrown error details.
 - Valid requests strip `cf-container-target-port`, hop-by-hop headers, `Connection`-named headers, Cloudflare/client IP headers, sensitive client headers, and forwarding metadata headers including `via`, `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-port`, `x-forwarded-server`, `x-client-ip`, and `x-cluster-client-ip`.
 
 - [ ] **Step 2: Write Cloudflare Containers Worker**
@@ -1082,6 +1083,7 @@ Write `cloudflare/container-worker.mjs` with the same production behavior as the
 - Test injection for container lookup, e.g. `handleContainerRequest(request, env, { getContainerImpl = getContainer })`.
 - Node test import support without requiring real Cloudflare bindings.
 - Exact route matching on `/rpc/<RPC_PROXY_PATH_TOKEN>` with an empty query string.
+- Generic `502 Bad gateway` responses when `startAndWaitForPorts()` or `container.fetch()` throws.
 - `cf-container-target-port` stripping before `container.fetch()` so a route-token holder cannot override the target container port.
 - Broadened forwarding metadata stripping for `via`, `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-port`, `x-forwarded-server`, `x-client-ip`, and `x-cluster-client-ip`.
 
@@ -1124,7 +1126,7 @@ bash scripts/test-nginx-routing.sh
 npm run dry-run:containers
 ```
 
-Expected: Node tests pass, the Containers Worker parses, nginx health-probe hosts return 204 without upstream requests, and Wrangler validates and bundles the Worker. A real deploy requires Workers Paid, Docker running locally, and Cloudflare Containers availability on the account.
+Expected: Node tests pass including generic container startup and fetch error handling, the Containers Worker parses, nginx health-probe hosts return 204 without upstream requests, and Wrangler validates and bundles the Worker. A real deploy requires Workers Paid, Docker running locally, and Cloudflare Containers availability on the account.
 
 - [ ] **Step 5: Commit Cloudflare Containers files**
 

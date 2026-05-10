@@ -9,6 +9,19 @@ const ENV = Object.freeze({
   RPC_PROXY_CONTAINER: Object.freeze({ name: "binding" }),
 });
 
+const HTTP_STATUS = Object.freeze({
+  badGateway: 502,
+});
+
+const RESPONSE_TEXT = Object.freeze({
+  badGateway: "Bad gateway",
+});
+
+const SENSITIVE_ERRORS = Object.freeze({
+  start: "sensitive-start-detail",
+  fetch: "sensitive-fetch-detail",
+});
+
 function createContainerMock(response = new Response("container response")) {
   const calls = {
     fetchRequest: undefined,
@@ -26,6 +39,14 @@ function createContainerMock(response = new Response("container response")) {
   };
 
   return { calls, container };
+}
+
+async function assertGenericBadGateway(response, sensitiveText) {
+  const body = await response.text();
+
+  assert.equal(response.status, HTTP_STATUS.badGateway);
+  assert.equal(body, RESPONSE_TEXT.badGateway);
+  assert.equal(body.includes(sensitiveText), false);
 }
 
 test("rejects requests to the wrong path without starting a container", async () => {
@@ -135,6 +156,53 @@ test("starts the named container and forwards the request to the container root"
   assert.equal(calls.fetchRequest.method, "POST");
   assert.equal(calls.fetchRequest.headers.get("content-type"), "application/json");
   assert.equal(await calls.fetchRequest.text(), body);
+});
+
+test("returns bad gateway without sensitive details when container startup throws", async () => {
+  let fetchCalled = false;
+  const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+    method: "POST",
+    body: "{}",
+  });
+  const container = {
+    async fetch() {
+      fetchCalled = true;
+      return new Response("unexpected");
+    },
+    async startAndWaitForPorts() {
+      throw new Error(SENSITIVE_ERRORS.start);
+    },
+  };
+
+  const response = await handleContainerRequest(request, ENV, {
+    getContainerImpl() {
+      return container;
+    },
+  });
+
+  await assertGenericBadGateway(response, SENSITIVE_ERRORS.start);
+  assert.equal(fetchCalled, false);
+});
+
+test("returns bad gateway without sensitive details when container fetch throws", async () => {
+  const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+    method: "POST",
+    body: "{}",
+  });
+  const container = {
+    async fetch() {
+      throw new Error(SENSITIVE_ERRORS.fetch);
+    },
+    async startAndWaitForPorts() {},
+  };
+
+  const response = await handleContainerRequest(request, ENV, {
+    getContainerImpl() {
+      return container;
+    },
+  });
+
+  await assertGenericBadGateway(response, SENSITIVE_ERRORS.fetch);
 });
 
 test("strips client and forwarding metadata before forwarding to the container", async () => {
