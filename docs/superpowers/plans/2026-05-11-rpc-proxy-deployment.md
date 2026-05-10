@@ -61,6 +61,7 @@ Write `.gitignore`:
 .dev.vars*
 node_modules/
 npm-debug.log*
+logs/
 coverage/
 dist/
 .wrangler/
