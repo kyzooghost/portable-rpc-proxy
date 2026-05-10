@@ -19,7 +19,17 @@ line_count() {
 request_status() {
   local url="$1"
   local label="$2"
+  local host="${3:-}"
   local status
+
+  if [[ -n "$host" ]]; then
+    status="$(curl -sS -H "Host: $host" -o "$tmp_dir/$label.body" -w '%{http_code}' "$url")" || {
+      printf 'FAIL %s curl request failed\n' "$label" >&2
+      exit 1
+    }
+    printf '%s\n' "$status"
+    return
+  fi
 
   if ! status="$(curl -sS -o "$tmp_dir/$label.body" -w '%{http_code}' "$url")"; then
     printf 'FAIL %s curl request failed\n' "$label" >&2
@@ -166,6 +176,15 @@ root_status="$(request_status "http://127.0.0.1:$published_port/" "root-request"
 assert_equals "200" "$root_status" "root request status"
 assert_equals "1" "$(line_count)" "root request upstream count"
 assert_equals "/v2/key?auth=placeholder" "$(sed -n '1p' "$url_log")" "root request upstream URL"
+
+before_health_probe_count="$(line_count)"
+ping_status="$(request_status "http://127.0.0.1:$published_port/" "ping-health-probe" "ping")"
+assert_equals "204" "$ping_status" "ping health probe status"
+assert_equals "$before_health_probe_count" "$(line_count)" "ping health probe upstream count"
+
+container_start_status="$(request_status "http://127.0.0.1:$published_port/" "container-start-health-probe" "containerstarthealthcheck")"
+assert_equals "204" "$container_start_status" "container start health probe status"
+assert_equals "$before_health_probe_count" "$(line_count)" "container start health probe upstream count"
 
 before_query_count="$(line_count)"
 query_status="$(request_status "http://127.0.0.1:$published_port/?client=1" "query-request")"

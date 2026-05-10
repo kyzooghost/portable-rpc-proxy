@@ -27,10 +27,11 @@ The current directory is not a git repository. If this project should have commi
 - Create `docker-compose.example.yml`: local and VM deployment example.
 - Create `scripts/test-derive-upstream.sh`: shell test for URL derivation, invalid URL failures, unsafe nginx config characters including raw `$`, and TLS host separation.
 - Create `scripts/test-entrypoint.sh`: shell test for listen port validation and rendered nginx config hardening.
-- Create `scripts/test-nginx-routing.sh`: runtime Docker test proving root requests preserve configured upstream query strings, client query strings return 404 without forwarding, and non-root paths return 404.
+- Create `scripts/test-nginx-routing.sh`: runtime Docker test proving root requests preserve configured upstream query strings, Cloudflare Containers health-probe hosts return 204 without forwarding, client query strings return 404 without forwarding, and non-root paths return 404.
 - Create `cloudflare/worker.mjs`: Cloudflare Worker Free proxy.
 - Create `cloudflare/worker.test.mjs`: Node built-in tests for the Worker proxy.
 - Create `cloudflare/container-worker.mjs`: Cloudflare Containers Paid Worker entrypoint.
+- Create `cloudflare/container-worker.test.mjs`: Node built-in tests for the Containers Worker proxy with mocked container lookup.
 - Create `wrangler.free.example.toml`: Worker Free deployment config template.
 - Create `wrangler.containers.example.toml`: Cloudflare Containers deployment config template.
 - Create `README.md`: deployment and verification runbook.
@@ -348,7 +349,7 @@ assert_port_failure "65536" "above-range-port"
 printf 'PASS entrypoint\n'
 ```
 
-Write `scripts/test-nginx-routing.sh` as a runtime Docker test that starts a local Node upstream server, runs the built `rpc-proxy-nginx:local` image with `RPC_UPSTREAM_URL=http://host.docker.internal:<local-port>/v2/key?auth=placeholder`, verifies `/` reaches upstream as exactly `/v2/key?auth=placeholder`, verifies `/?client=1` returns 404 without reaching upstream, and verifies `/foo` returns 404.
+Write `scripts/test-nginx-routing.sh` as a runtime Docker test that starts a local Node upstream server, runs the built `rpc-proxy-nginx:local` image with `RPC_UPSTREAM_URL=http://host.docker.internal:<local-port>/v2/key?auth=placeholder`, verifies `/` reaches upstream as exactly `/v2/key?auth=placeholder`, verifies `/` with `Host: ping` and `Host: containerstarthealthcheck` returns 204 without reaching upstream, verifies `/?client=1` returns 404 without reaching upstream, and verifies `/foo` returns 404.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -1060,108 +1061,31 @@ Expected: commit succeeds.
 ### Task 4: Cloudflare Containers Paid Path
 
 **Files:**
+- Create: `cloudflare/container-worker.test.mjs`
 - Create: `cloudflare/container-worker.mjs`
 - Create: `wrangler.containers.example.toml`
 
-- [ ] **Step 1: Write Cloudflare Containers Worker**
+- [ ] **Step 1: Write failing Cloudflare Containers Worker tests**
 
-Write `cloudflare/container-worker.mjs`:
+Write `cloudflare/container-worker.test.mjs` with Node built-in tests and mocked container lookup. Tests must prove:
 
-```js
-import { Container, getContainer } from "@cloudflare/containers";
+- Wrong path returns 404 and does not call `getContainer`.
+- Correct path with query string returns 404 and does not call `getContainer`.
+- Missing upstream or path token returns 500 without container lookup.
+- Valid requests start the named `rpc-proxy` container with `RPC_UPSTREAM_URL` and `RPC_PROXY_LISTEN_PORT=8545`, wait on port 8545, rewrite the container request to `/` with no query string, preserve method and body, and call `container.fetch`.
+- Valid requests strip `cf-container-target-port`, hop-by-hop headers, `Connection`-named headers, Cloudflare/client IP headers, sensitive client headers, and forwarding metadata headers including `via`, `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-port`, `x-forwarded-server`, `x-client-ip`, and `x-cluster-client-ip`.
 
-const ENV_KEYS = Object.freeze({
-  upstreamUrl: "RPC_UPSTREAM_URL",
-  pathToken: "RPC_PROXY_PATH_TOKEN",
-  containerBinding: "RPC_PROXY_CONTAINER",
-});
+- [ ] **Step 2: Write Cloudflare Containers Worker**
 
-const CONTAINER = Object.freeze({
-  defaultPort: 8545,
-  instanceName: "rpc-proxy",
-  listenPort: "8545",
-  sleepAfter: "5m",
-});
+Write `cloudflare/container-worker.mjs` with the same production behavior as the original Containers Worker, plus:
 
-const HTTP_STATUS = Object.freeze({
-  notFound: 404,
-  configError: 500,
-});
+- Test injection for container lookup, e.g. `handleContainerRequest(request, env, { getContainerImpl = getContainer })`.
+- Node test import support without requiring real Cloudflare bindings.
+- Exact route matching on `/rpc/<RPC_PROXY_PATH_TOKEN>` with an empty query string.
+- `cf-container-target-port` stripping before `container.fetch()` so a route-token holder cannot override the target container port.
+- Broadened forwarding metadata stripping for `via`, `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-port`, `x-forwarded-server`, `x-client-ip`, and `x-cluster-client-ip`.
 
-const RESPONSE_TEXT = Object.freeze({
-  notFound: "Not found",
-  missingUpstream: "Proxy upstream is not configured",
-  missingPathToken: "Proxy path token is not configured",
-});
-
-function getRequiredEnv(env, key) {
-  const value = env?.[key];
-
-  if (typeof value !== "string" || value.length === 0) {
-    return undefined;
-  }
-
-  return value;
-}
-
-function configError(message) {
-  return new Response(message, { status: HTTP_STATUS.configError });
-}
-
-function expectedPath(pathToken) {
-  return `/rpc/${pathToken}`;
-}
-
-function buildContainerRequest(request) {
-  const containerUrl = new URL(request.url);
-  containerUrl.pathname = "/";
-  containerUrl.search = "";
-
-  return new Request(containerUrl.toString(), request);
-}
-
-export class RpcProxyContainer extends Container {
-  defaultPort = CONTAINER.defaultPort;
-  requiredPorts = [CONTAINER.defaultPort];
-  sleepAfter = CONTAINER.sleepAfter;
-}
-
-export async function handleContainerRequest(request, env) {
-  const upstreamUrl = getRequiredEnv(env, ENV_KEYS.upstreamUrl);
-  if (!upstreamUrl) {
-    return configError(RESPONSE_TEXT.missingUpstream);
-  }
-
-  const pathToken = getRequiredEnv(env, ENV_KEYS.pathToken);
-  if (!pathToken) {
-    return configError(RESPONSE_TEXT.missingPathToken);
-  }
-
-  const requestUrl = new URL(request.url);
-  if (requestUrl.pathname !== expectedPath(pathToken)) {
-    return new Response(RESPONSE_TEXT.notFound, { status: HTTP_STATUS.notFound });
-  }
-
-  const container = getContainer(env[ENV_KEYS.containerBinding], CONTAINER.instanceName);
-
-  await container.startAndWaitForPorts({
-    startOptions: {
-      envVars: {
-        RPC_UPSTREAM_URL: upstreamUrl,
-        RPC_PROXY_LISTEN_PORT: CONTAINER.listenPort,
-      },
-    },
-  });
-
-  return container.fetch(buildContainerRequest(request));
-}
-
-export default {
-  fetch: handleContainerRequest,
-};
-```
-
-- [ ] **Step 2: Write Cloudflare Containers Wrangler template**
+- [ ] **Step 3: Write Cloudflare Containers Wrangler template**
 
 Write `wrangler.containers.example.toml`:
 
@@ -1189,22 +1113,25 @@ new_sqlite_classes = ["RpcProxyContainer"]
 # npx wrangler secret put RPC_PROXY_PATH_TOKEN --config wrangler.containers.example.toml
 ```
 
-- [ ] **Step 3: Dry-run Cloudflare Containers deployment**
+- [ ] **Step 4: Verify Cloudflare Containers Worker and nginx health routing**
 
 Run:
 
 ```bash
+npm test
+node --check cloudflare/container-worker.mjs
+bash scripts/test-nginx-routing.sh
 npm run dry-run:containers
 ```
 
-Expected: Wrangler validates and bundles the Worker. A real deploy requires Workers Paid, Docker running locally, and Cloudflare Containers availability on the account.
+Expected: Node tests pass, the Containers Worker parses, nginx health-probe hosts return 204 without upstream requests, and Wrangler validates and bundles the Worker. A real deploy requires Workers Paid, Docker running locally, and Cloudflare Containers availability on the account.
 
-- [ ] **Step 4: Commit Cloudflare Containers files**
+- [ ] **Step 5: Commit Cloudflare Containers files**
 
 Run:
 
 ```bash
-git add cloudflare/container-worker.mjs wrangler.containers.example.toml package.json package-lock.json
+git add cloudflare/container-worker.mjs cloudflare/container-worker.test.mjs wrangler.containers.example.toml package.json package-lock.json
 git commit -m "feat: add cloudflare containers rpc proxy path"
 ```
 
@@ -1359,7 +1286,7 @@ npm run dry-run:worker:free
 npm run dry-run:containers
 ```
 
-The routing test should prove `/` forwards to the configured upstream path and query exactly, `/?client=1` returns 404 without forwarding, and `/foo` returns 404. The Docker negative checks should exit non-zero with the unsafe upstream URL, invalid upstream port, and listen port validation messages. The invalid upstream port check must not print the upstream path or query.
+The routing test should prove `/` forwards to the configured upstream path and query exactly, `/` with `Host: ping` and `Host: containerstarthealthcheck` returns 204 without forwarding, `/?client=1` returns 404 without forwarding, and `/foo` returns 404. The Docker negative checks should exit non-zero with the unsafe upstream URL, invalid upstream port, and listen port validation messages. The invalid upstream port check must not print the upstream path or query.
 
 Scan for accidental concrete RPC values before committing:
 
@@ -1385,6 +1312,7 @@ Run:
 
 ```bash
 npm test
+node --check cloudflare/container-worker.mjs
 bash scripts/test-derive-upstream.sh
 bash scripts/test-entrypoint.sh
 docker build -t rpc-proxy-nginx:local .
@@ -1423,6 +1351,7 @@ rg -n "RPC_UPSTREAM_URL=https://[^<]|RPC_PROXY_PATH_TOKEN=[^<]|/v2/[A-Za-z0-9_-]
 Expected:
 
 - `npm test` passes.
+- `node --check cloudflare/container-worker.mjs` exits `0`.
 - `bash scripts/test-derive-upstream.sh` prints `PASS derive-upstream`.
 - `bash scripts/test-entrypoint.sh` prints `PASS entrypoint`.
 - Docker image builds.

@@ -1,4 +1,21 @@
-import { Container, getContainer } from "@cloudflare/containers";
+async function loadContainersPackage() {
+  try {
+    return await import("@cloudflare/containers");
+  } catch (error) {
+    if (globalThis.process?.versions?.node) {
+      return {
+        Container: class {},
+        getContainer() {
+          throw error;
+        },
+      };
+    }
+
+    throw error;
+  }
+}
+
+const { Container, getContainer } = await loadContainersPackage();
 
 const ENV_KEYS = Object.freeze({
   upstreamUrl: "RPC_UPSTREAM_URL",
@@ -38,6 +55,7 @@ const HEADER_NAMES = Object.freeze({
 const STRIPPED_HEADERS = Object.freeze([
   "authorization",
   HEADER_NAMES.connection,
+  "cf-container-target-port",
   "content-length",
   "cookie",
   "cf-connecting-ip",
@@ -56,7 +74,14 @@ const STRIPPED_HEADERS = Object.freeze([
   "transfer-encoding",
   "true-client-ip",
   "upgrade",
+  "via",
+  "x-client-ip",
+  "x-cluster-client-ip",
   "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-port",
+  "x-forwarded-proto",
+  "x-forwarded-server",
   "x-real-ip",
 ]);
 
@@ -113,7 +138,8 @@ export class RpcProxyContainer extends Container {
   sleepAfter = CONTAINER.sleepAfter;
 }
 
-export async function handleContainerRequest(request, env) {
+export async function handleContainerRequest(request, env, dependencies = {}) {
+  const { getContainerImpl = getContainer } = dependencies;
   const upstreamUrl = getRequiredEnv(env, ENV_KEYS.upstreamUrl);
   if (!upstreamUrl) {
     return configError(RESPONSE_TEXT.missingUpstream);
@@ -129,7 +155,7 @@ export async function handleContainerRequest(request, env) {
     return new Response(RESPONSE_TEXT.notFound, { status: HTTP_STATUS.notFound });
   }
 
-  const container = getContainer(env[ENV_KEYS.containerBinding], CONTAINER.instanceName);
+  const container = getContainerImpl(env[ENV_KEYS.containerBinding], CONTAINER.instanceName);
 
   await container.startAndWaitForPorts({
     startOptions: {

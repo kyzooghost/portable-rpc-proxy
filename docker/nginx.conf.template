@@ -8,6 +8,14 @@ http {
         listen ${RPC_PROXY_LISTEN_PORT};
 
         location = / {
+            if ($host = ping) {
+                return 204;
+            }
+
+            if ($host = containerstarthealthcheck) {
+                return 204;
+            }
+
             if ($args != "") {
                 return 404;
             }
