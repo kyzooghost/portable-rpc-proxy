@@ -85,7 +85,11 @@ function copyForwardHeaders(headers) {
   }
 
   for (const headerName of connectionHeader?.split(",") ?? []) {
-    forwardedHeaders.delete(headerName.trim().toLowerCase());
+    const strippedHeaderName = headerName.trim().toLowerCase();
+
+    if (strippedHeaderName.length > 0) {
+      forwardedHeaders.delete(strippedHeaderName);
+    }
   }
 
   return forwardedHeaders;

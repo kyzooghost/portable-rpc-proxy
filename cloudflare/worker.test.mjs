@@ -89,6 +89,27 @@ test("strips hop-by-hop and IP-identifying headers from forwarded requests", asy
   }
 });
 
+test("forwards requests with empty Connection header tokens", async () => {
+  const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+    method: "POST",
+    headers: {
+      connection: "x-custom-hop, ",
+      "x-custom-hop": "remove-me",
+    },
+    body: "{}",
+  });
+
+  let forwardedRequest;
+  const response = await handleRequest(request, ENV, async (upstreamRequest) => {
+    forwardedRequest = upstreamRequest;
+    return new Response("upstream response");
+  });
+
+  assert.notEqual(response.status, 502);
+  assert.equal(response.status, 200);
+  assert.equal(forwardedRequest.headers.has("x-custom-hop"), false);
+});
+
 test("forwards GET without adding a request body", async () => {
   const request = new Request("https://proxy.invalid/rpc/test-route-token", {
     method: "GET",
