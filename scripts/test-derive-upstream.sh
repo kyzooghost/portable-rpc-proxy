@@ -43,6 +43,8 @@ assert_failure() {
 }
 
 UNSAFE_NGINX_CONFIG_MESSAGE='RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration'
+INVALID_UPSTREAM_AUTHORITY_MESSAGE='RPC_UPSTREAM_URL must use a DNS hostname with optional port'
+INVALID_UPSTREAM_PORT_MESSAGE='RPC_UPSTREAM_URL port must be a number from 1 to 65535'
 
 assert_equals "https|rpc-provider.invalid|rpc-provider.invalid|/v2/key" "$(derive "https://rpc-provider.invalid/v2/key")" "https URL with path"
 assert_equals "http|rpc-provider.invalid|rpc-provider.invalid|/" "$(derive "http://rpc-provider.invalid")" "http URL without path"
@@ -54,6 +56,12 @@ assert_failure "ftp://rpc-provider.invalid/path" "RPC_UPSTREAM_URL must start wi
 assert_failure "https:///v2/key" "RPC_UPSTREAM_URL must include a host" "empty host"
 assert_failure "https://user:pass@rpc-provider.invalid/v2/key" "RPC_UPSTREAM_URL must not include userinfo" "userinfo"
 assert_failure "https://rpc-provider.invalid/v2/key#frag" "RPC_UPSTREAM_URL must not include a fragment" "fragment"
+assert_failure "https://rpc-provider.invalid:/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "empty upstream port"
+assert_failure "https://rpc-provider.invalid:abc/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "non-numeric upstream port"
+assert_failure "https://rpc-provider.invalid:0/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "zero upstream port"
+assert_failure "https://rpc-provider.invalid:65536/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "above-range upstream port"
+assert_failure "https://rpc-provider.invalid:99999/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "invalid nginx upstream port"
+assert_failure "https://[2001:db8::1]/v2/key" "$INVALID_UPSTREAM_AUTHORITY_MESSAGE" "ipv6 upstream literal"
 assert_failure "https://rpc-provider.invalid/v2/key;error_log /dev/stdout info" "$UNSAFE_NGINX_CONFIG_MESSAGE" "nginx directive injection characters"
 assert_failure "https://rpc-provider.invalid/v2/key bad" "$UNSAFE_NGINX_CONFIG_MESSAGE" "nginx whitespace injection character"
 assert_failure "https://rpc-provider.invalid/v2/{key}" "$UNSAFE_NGINX_CONFIG_MESSAGE" "nginx brace injection characters"

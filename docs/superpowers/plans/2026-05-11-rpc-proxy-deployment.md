@@ -142,7 +142,7 @@ Expected: commit succeeds. If the plan file is still being edited during executi
 - Create: `Dockerfile`
 - Create: `docker-compose.example.yml`
 
-Supported nginx upstream hosts are DNS hostnames with an optional `:port`, such as `rpc-provider.invalid` or `rpc-provider.invalid:443`. IPv6 literal support is out of scope for this minimal proxy. Literal `$` characters in upstream URLs must be percent-encoded as `%24`; raw `$` is rejected because nginx treats it as a variable marker in `proxy_pass`. JSON-RPC clients POST to `/` with a request body; nginx rejects any client query string with 404 so client args cannot corrupt a configured upstream query URL.
+Supported nginx upstream hosts are DNS hostnames with an optional `:port`, such as `rpc-provider.invalid` or `rpc-provider.invalid:443`. Optional ports must be decimal numbers from 1 through 65535. IPv6 literals and any authority shapes with extra colons are out of scope and fail before nginx config rendering. Literal `$` characters in upstream URLs must be percent-encoded as `%24`; raw `$` is rejected because nginx treats it as a variable marker in `proxy_pass`. JSON-RPC clients POST to `/` with a request body; nginx rejects any client query string with 404 so client args cannot corrupt a configured upstream query URL.
 
 - [ ] **Step 1: Write the failing shell tests**
 
@@ -194,6 +194,8 @@ assert_failure() {
 }
 
 UNSAFE_NGINX_CONFIG_MESSAGE='RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration'
+INVALID_UPSTREAM_AUTHORITY_MESSAGE='RPC_UPSTREAM_URL must use a DNS hostname with optional port'
+INVALID_UPSTREAM_PORT_MESSAGE='RPC_UPSTREAM_URL port must be a number from 1 to 65535'
 
 assert_equals "https|rpc-provider.invalid|rpc-provider.invalid|/v2/key" "$(derive "https://rpc-provider.invalid/v2/key")" "https URL with path"
 assert_equals "http|rpc-provider.invalid|rpc-provider.invalid|/" "$(derive "http://rpc-provider.invalid")" "http URL without path"
@@ -205,6 +207,12 @@ assert_failure "ftp://rpc-provider.invalid/path" "RPC_UPSTREAM_URL must start wi
 assert_failure "https:///v2/key" "RPC_UPSTREAM_URL must include a host" "empty host"
 assert_failure "https://user:pass@rpc-provider.invalid/v2/key" "RPC_UPSTREAM_URL must not include userinfo" "userinfo"
 assert_failure "https://rpc-provider.invalid/v2/key#frag" "RPC_UPSTREAM_URL must not include a fragment" "fragment"
+assert_failure "https://rpc-provider.invalid:/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "empty upstream port"
+assert_failure "https://rpc-provider.invalid:abc/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "non-numeric upstream port"
+assert_failure "https://rpc-provider.invalid:0/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "zero upstream port"
+assert_failure "https://rpc-provider.invalid:65536/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "above-range upstream port"
+assert_failure "https://rpc-provider.invalid:99999/v2/key" "$INVALID_UPSTREAM_PORT_MESSAGE" "invalid nginx upstream port"
+assert_failure "https://[2001:db8::1]/v2/key" "$INVALID_UPSTREAM_AUTHORITY_MESSAGE" "ipv6 upstream literal"
 assert_failure "https://rpc-provider.invalid/v2/key;error_log /dev/stdout info" "$UNSAFE_NGINX_CONFIG_MESSAGE" "nginx directive injection characters"
 assert_failure "https://rpc-provider.invalid/v2/key bad" "$UNSAFE_NGINX_CONFIG_MESSAGE" "nginx whitespace injection character"
 assert_failure "https://rpc-provider.invalid/v2/{key}" "$UNSAFE_NGINX_CONFIG_MESSAGE" "nginx brace injection characters"
@@ -353,7 +361,7 @@ docker build -t rpc-proxy-nginx:local .
 bash scripts/test-nginx-routing.sh
 ```
 
-Expected: FAIL because unsafe nginx config characters, raw `$` in `RPC_UPSTREAM_URL`, invalid `RPC_PROXY_LISTEN_PORT` values, cleared client secret headers, and client query string rejection are not handled yet. The routing test should show `/?client=1` is forwarded before the nginx guard is added.
+Expected: FAIL because unsafe nginx config characters, raw `$` in `RPC_UPSTREAM_URL`, invalid upstream ports, IPv6 literals, invalid `RPC_PROXY_LISTEN_PORT` values, cleared client secret headers, and client query string rejection are not handled yet. The routing test should show `/?client=1` is forwarded before the nginx guard is added.
 
 - [ ] **Step 3: Implement upstream derivation**
 
@@ -366,6 +374,8 @@ set -eu
 : "${RPC_UPSTREAM_URL:?RPC_UPSTREAM_URL is required}"
 
 UNSAFE_NGINX_CONFIG_MESSAGE='RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration'
+INVALID_UPSTREAM_AUTHORITY_MESSAGE='RPC_UPSTREAM_URL must use a DNS hostname with optional port'
+INVALID_UPSTREAM_PORT_MESSAGE='RPC_UPSTREAM_URL port must be a number from 1 to 65535'
 
 case "$RPC_UPSTREAM_URL" in
   *";"*|*"{"*|*"}"*|*'$'*|*[[:space:]]*)
@@ -392,8 +402,8 @@ case "$RPC_UPSTREAM_URL" in
     ;;
 esac
 
-RPC_UPSTREAM_HOST="${RPC_UPSTREAM_REST%%[/?]*}"
-RPC_UPSTREAM_PATH_SUFFIX="${RPC_UPSTREAM_REST#$RPC_UPSTREAM_HOST}"
+RPC_UPSTREAM_AUTHORITY="${RPC_UPSTREAM_REST%%[/?]*}"
+RPC_UPSTREAM_PATH_SUFFIX="${RPC_UPSTREAM_REST#$RPC_UPSTREAM_AUTHORITY}"
 
 case "$RPC_UPSTREAM_PATH_SUFFIX" in
   '')
@@ -407,19 +417,70 @@ case "$RPC_UPSTREAM_PATH_SUFFIX" in
     ;;
 esac
 
-if [ -z "$RPC_UPSTREAM_HOST" ]; then
+if [ -z "$RPC_UPSTREAM_AUTHORITY" ]; then
   printf 'RPC_UPSTREAM_URL must include a host\n' >&2
   exit 1
 fi
 
-case "$RPC_UPSTREAM_HOST" in
+case "$RPC_UPSTREAM_AUTHORITY" in
   *@*)
     printf 'RPC_UPSTREAM_URL must not include userinfo\n' >&2
     exit 1
     ;;
 esac
 
-RPC_UPSTREAM_TLS_HOST="${RPC_UPSTREAM_HOST%%:*}"
+case "$RPC_UPSTREAM_AUTHORITY" in
+  *"["*|*"]"*|*:*:*)
+    printf '%s\n' "$INVALID_UPSTREAM_AUTHORITY_MESSAGE" >&2
+    exit 1
+    ;;
+esac
+
+case "$RPC_UPSTREAM_AUTHORITY" in
+  *:*)
+    RPC_UPSTREAM_TLS_HOST="${RPC_UPSTREAM_AUTHORITY%%:*}"
+    RPC_UPSTREAM_PORT="${RPC_UPSTREAM_AUTHORITY#*:}"
+
+    if [ -z "$RPC_UPSTREAM_TLS_HOST" ]; then
+      printf 'RPC_UPSTREAM_URL must include a host\n' >&2
+      exit 1
+    fi
+
+    case "$RPC_UPSTREAM_PORT" in
+      ''|*[!0123456789]*)
+        printf '%s\n' "$INVALID_UPSTREAM_PORT_MESSAGE" >&2
+        exit 1
+        ;;
+    esac
+
+    RPC_UPSTREAM_PORT_VALUE="$RPC_UPSTREAM_PORT"
+    while [ "${RPC_UPSTREAM_PORT_VALUE#0}" != "$RPC_UPSTREAM_PORT_VALUE" ]; do
+      RPC_UPSTREAM_PORT_VALUE="${RPC_UPSTREAM_PORT_VALUE#0}"
+    done
+
+    case "$RPC_UPSTREAM_PORT_VALUE" in
+      '')
+        printf '%s\n' "$INVALID_UPSTREAM_PORT_MESSAGE" >&2
+        exit 1
+        ;;
+      ??????*)
+        printf '%s\n' "$INVALID_UPSTREAM_PORT_MESSAGE" >&2
+        exit 1
+        ;;
+    esac
+
+    if [ "$RPC_UPSTREAM_PORT_VALUE" -gt 65535 ]; then
+      printf '%s\n' "$INVALID_UPSTREAM_PORT_MESSAGE" >&2
+      exit 1
+    fi
+
+    RPC_UPSTREAM_HOST="$RPC_UPSTREAM_AUTHORITY"
+    ;;
+  *)
+    RPC_UPSTREAM_HOST="$RPC_UPSTREAM_AUTHORITY"
+    RPC_UPSTREAM_TLS_HOST="$RPC_UPSTREAM_AUTHORITY"
+    ;;
+esac
 
 if [ -z "$RPC_UPSTREAM_TLS_HOST" ]; then
   printf 'RPC_UPSTREAM_URL must include a host\n' >&2
@@ -649,6 +710,24 @@ docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL='h
 ```
 
 Expected: non-zero exit with `RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration`.
+
+Run:
+
+```bash
+invalid_upstream_port_output="$(mktemp)"
+if docker run --rm -e 'RPC_UPSTREAM_URL=https://rpc-provider.invalid:99999/v2/key?api_key=placeholder' rpc-proxy-nginx:local nginx -t >"$invalid_upstream_port_output" 2>&1; then
+  printf 'expected invalid RPC_UPSTREAM_URL port to fail\n' >&2
+  exit 1
+fi
+grep -F 'RPC_UPSTREAM_URL port must be a number from 1 to 65535' "$invalid_upstream_port_output"
+if grep -F -q '/v2/key' "$invalid_upstream_port_output" || grep -F -q 'placeholder' "$invalid_upstream_port_output"; then
+  printf 'invalid upstream port error leaked URL path or query\n' >&2
+  exit 1
+fi
+rm -f "$invalid_upstream_port_output"
+```
+
+Expected: non-zero exit with `RPC_UPSTREAM_URL port must be a number from 1 to 65535`, without printing the upstream path or query.
 
 Run:
 
@@ -1258,6 +1337,17 @@ if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL
 fi
 grep -F 'RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration' "$unsafe_url_output"
 rm -f "$unsafe_url_output"
+invalid_upstream_port_output="$(mktemp)"
+if docker run --rm -e 'RPC_UPSTREAM_URL=https://rpc-provider.invalid:99999/v2/key?api_key=placeholder' rpc-proxy-nginx:local nginx -t >"$invalid_upstream_port_output" 2>&1; then
+  printf 'expected invalid RPC_UPSTREAM_URL port to fail\n' >&2
+  exit 1
+fi
+grep -F 'RPC_UPSTREAM_URL port must be a number from 1 to 65535' "$invalid_upstream_port_output"
+if grep -F -q '/v2/key' "$invalid_upstream_port_output" || grep -F -q 'placeholder' "$invalid_upstream_port_output"; then
+  printf 'invalid upstream port error leaked URL path or query\n' >&2
+  exit 1
+fi
+rm -f "$invalid_upstream_port_output"
 unsafe_port_output="$(mktemp)"
 if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL=https://rpc-provider.invalid/v2/key -e 'RPC_PROXY_LISTEN_PORT=8545; error_log /dev/stdout info' rpc-proxy-nginx:local nginx -t >"$unsafe_port_output" 2>&1; then
   printf 'expected unsafe RPC_PROXY_LISTEN_PORT to fail\n' >&2
@@ -1269,7 +1359,7 @@ npm run dry-run:worker:free
 npm run dry-run:containers
 ```
 
-The routing test should prove `/` forwards to the configured upstream path and query exactly, `/?client=1` returns 404 without forwarding, and `/foo` returns 404. The two Docker negative checks should exit non-zero with the unsafe upstream URL and listen port validation messages.
+The routing test should prove `/` forwards to the configured upstream path and query exactly, `/?client=1` returns 404 without forwarding, and `/foo` returns 404. The Docker negative checks should exit non-zero with the unsafe upstream URL, invalid upstream port, and listen port validation messages. The invalid upstream port check must not print the upstream path or query.
 
 Scan for accidental concrete RPC values before committing:
 
@@ -1306,6 +1396,17 @@ if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL
 fi
 grep -F 'RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration' "$unsafe_url_output"
 rm -f "$unsafe_url_output"
+invalid_upstream_port_output="$(mktemp)"
+if docker run --rm -e 'RPC_UPSTREAM_URL=https://rpc-provider.invalid:99999/v2/key?api_key=placeholder' rpc-proxy-nginx:local nginx -t >"$invalid_upstream_port_output" 2>&1; then
+  printf 'expected invalid RPC_UPSTREAM_URL port to fail\n' >&2
+  exit 1
+fi
+grep -F 'RPC_UPSTREAM_URL port must be a number from 1 to 65535' "$invalid_upstream_port_output"
+if grep -F -q '/v2/key' "$invalid_upstream_port_output" || grep -F -q 'placeholder' "$invalid_upstream_port_output"; then
+  printf 'invalid upstream port error leaked URL path or query\n' >&2
+  exit 1
+fi
+rm -f "$invalid_upstream_port_output"
 unsafe_port_output="$(mktemp)"
 if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL=https://rpc-provider.invalid/v2/key -e 'RPC_PROXY_LISTEN_PORT=8545; error_log /dev/stdout info' rpc-proxy-nginx:local nginx -t >"$unsafe_port_output" 2>&1; then
   printf 'expected unsafe RPC_PROXY_LISTEN_PORT to fail\n' >&2
@@ -1326,7 +1427,8 @@ Expected:
 - `bash scripts/test-entrypoint.sh` prints `PASS entrypoint`.
 - Docker image builds.
 - `bash scripts/test-nginx-routing.sh` prints `PASS nginx-routing`.
-- Docker negative checks exit non-zero with `RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration` and `RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535`.
+- Docker negative checks exit non-zero with `RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration`, `RPC_UPSTREAM_URL port must be a number from 1 to 65535`, and `RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535`.
+- The invalid upstream port error does not print the upstream path or query.
 - Wrangler dry-runs finish without deploying.
 - `rg` returns no matches for real provider hosts, real upstream URLs, or real route tokens.
 
