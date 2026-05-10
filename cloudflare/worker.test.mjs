@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { HEADER_NAMES } from "./proxy-headers.mjs";
 import worker, { handleRequest } from "./worker.mjs";
 
 const ENV = Object.freeze({
@@ -11,6 +12,23 @@ const ENV = Object.freeze({
 test("rejects requests to the wrong path without forwarding", async () => {
   let fetchCalled = false;
   const request = new Request("https://proxy.invalid/rpc/wrong-token", {
+    method: "POST",
+    body: "{}",
+  });
+
+  const response = await handleRequest(request, ENV, async () => {
+    fetchCalled = true;
+    return new Response("unexpected");
+  });
+
+  assert.equal(response.status, 404);
+  assert.equal(await response.text(), "Not found");
+  assert.equal(fetchCalled, false);
+});
+
+test("rejects requests with a query string without forwarding", async () => {
+  let fetchCalled = false;
+  const request = new Request("https://proxy.invalid/rpc/test-route-token?client=1", {
     method: "POST",
     body: "{}",
   });
@@ -52,6 +70,29 @@ test("forwards POST body to configured upstream URL", async () => {
   assert.equal(forwardedRequest.headers.get("content-type"), "application/json");
   assert.equal(forwardedRequest.headers.has("x-forwarded-for"), false);
   assert.equal(await forwardedRequest.text(), body);
+});
+
+test("strips client Authorization and Cookie headers from forwarded requests", async () => {
+  const request = new Request("https://proxy.invalid/rpc/test-route-token", {
+    method: "POST",
+    headers: {
+      [HEADER_NAMES.authorization]: "Bearer client-token",
+      [HEADER_NAMES.cookie]: "session=client-secret",
+      "content-type": "application/json",
+    },
+    body: "{}",
+  });
+
+  let forwardedRequest;
+  const response = await handleRequest(request, ENV, async (upstreamRequest) => {
+    forwardedRequest = upstreamRequest;
+    return new Response("upstream response");
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(forwardedRequest.headers.get("content-type"), "application/json");
+  assert.equal(forwardedRequest.headers.has(HEADER_NAMES.authorization), false);
+  assert.equal(forwardedRequest.headers.has(HEADER_NAMES.cookie), false);
 });
 
 test("strips hop-by-hop and IP-identifying headers from forwarded requests", async () => {

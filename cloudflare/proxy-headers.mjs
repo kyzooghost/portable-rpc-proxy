@@ -32,6 +32,7 @@ export const HEADER_NAMES = Object.freeze({
 });
 
 export const PROXY_STRIPPED_REQUEST_HEADERS = Object.freeze([
+  HEADER_NAMES.authorization,
   HEADER_NAMES.connection,
   HEADER_NAMES.contentLength,
   HEADER_NAMES.cfConnectingIp,
@@ -40,6 +41,7 @@ export const PROXY_STRIPPED_REQUEST_HEADERS = Object.freeze([
   HEADER_NAMES.cfPseudoIpv4,
   HEADER_NAMES.cfRay,
   HEADER_NAMES.cfVisitor,
+  HEADER_NAMES.cookie,
   HEADER_NAMES.forwarded,
   HEADER_NAMES.host,
   HEADER_NAMES.keepAlive,

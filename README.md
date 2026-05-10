@@ -16,7 +16,7 @@ Minimal JSON-RPC proxy for environments where direct RPC provider subdomain acce
 - The nginx entrypoint rejects unsafe `RPC_UPSTREAM_URL` and `RPC_PROXY_LISTEN_PORT` values before rendering nginx config.
 - nginx only accepts root path requests, rejects client query strings, and returns `404` for non-root paths so client input cannot alter a configured upstream path or query.
 - nginx returns `204` for Cloudflare Containers health probes using `Host: ping` or `Host: containerstarthealthcheck` without forwarding to the upstream RPC provider.
-- Worker-based routes use `/rpc/<route-token>`. The Worker layer strips forwarding and client-IP metadata before forwarding; the Containers Worker also strips sensitive client headers before the request reaches nginx. nginx clears accidental client `Authorization`, `Proxy-Authorization`, and `Cookie` headers before forwarding upstream.
+- Worker-based routes use `/rpc/<route-token>`. The Worker layer strips forwarding, client-IP metadata, and sensitive client headers before forwarding. nginx clears accidental client `Authorization`, `Proxy-Authorization`, and `Cookie` headers before forwarding upstream.
 
 ## Local nginx Docker
 
@@ -101,7 +101,7 @@ Set local clients to the Worker route:
 ETH_RPC_URL=https://<worker-domain>/rpc/<route-token>
 ```
 
-The Worker validates the path token, forwards matching requests to the configured upstream URL, preserves upstream status and body, returns generic `502` text for upstream fetch failures, and strips hop-by-hop, forwarding, and client-IP metadata headers.
+The Worker validates the path token, rejects query strings, forwards matching requests to the configured upstream URL, preserves upstream status and body, returns generic `502` text for upstream fetch failures, and strips hop-by-hop, forwarding, client-IP metadata, and sensitive client headers.
 
 Cloudflare documents Workers Free with a 100,000 requests per day limit and 10 ms CPU time per request. Cloudflare also documents that network wait time for `fetch()` calls does not count toward CPU time.
 

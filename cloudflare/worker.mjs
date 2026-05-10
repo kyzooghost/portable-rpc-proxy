@@ -21,6 +21,10 @@ const RESPONSE_TEXT = Object.freeze({
 
 const BODYLESS_METHODS = new Set(["GET", "HEAD"]);
 
+const ROUTE = Object.freeze({
+  emptySearch: "",
+});
+
 function getRequiredEnv(env, key) {
   const value = env?.[key];
 
@@ -105,7 +109,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   }
 
   const requestUrl = new URL(request.url);
-  if (requestUrl.pathname !== expectedPath(pathToken)) {
+  if (requestUrl.pathname !== expectedPath(pathToken) || requestUrl.search !== ROUTE.emptySearch) {
     return new Response(RESPONSE_TEXT.notFound, { status: HTTP_STATUS.notFound });
   }
 
