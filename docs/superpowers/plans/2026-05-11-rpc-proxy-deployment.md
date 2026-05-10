@@ -4,7 +4,7 @@
 
 **Goal:** Build a minimal RPC proxy package with nginx Docker for VM deployment, Cloudflare Worker Free for no-Docker Cloudflare deployment, and Cloudflare Containers Paid as the Docker-on-Cloudflare path.
 
-**Architecture:** Keep `RPC_UPSTREAM_URL` as the single upstream input. nginx validates values that are rendered into config before `envsubst`, derives scheme, upstream authority, TLS hostname, and path/query at container startup so SNI and `Host` are correct, and clears accidental client secret headers before forwarding. Cloudflare Worker Free forwards directly with `fetch()`, while Cloudflare Containers validates the same secret path token before forwarding to the nginx container.
+**Architecture:** Keep `RPC_UPSTREAM_URL` as the single upstream input. nginx validates values that are rendered into config before `envsubst`, derives scheme, upstream authority, TLS hostname, and path/query at container startup so SNI and `Host` are correct, rejects client query strings before forwarding, and clears accidental client secret headers. Cloudflare Worker Free forwards directly with `fetch()`, while Cloudflare Containers validates the same secret path token before forwarding to the nginx container.
 
 **Tech Stack:** Docker, `nginx:1.27.5-alpine`, POSIX shell, Node.js built-in test runner, Cloudflare Workers, Wrangler `4.90.0`, `@cloudflare/containers` `0.3.3`.
 
@@ -22,11 +22,12 @@ The current directory is not a git repository. If this project should have commi
 - Create `package.json`: pin Wrangler and Cloudflare Containers versions and provide test/deploy scripts.
 - Create `docker/derive-upstream.sh`: reject nginx config metacharacters and raw `$`, then derive nginx scheme, upstream authority, TLS hostname, and path/query from `RPC_UPSTREAM_URL`.
 - Create `docker/docker-entrypoint.sh`: validate `RPC_PROXY_LISTEN_PORT`, render nginx config with all derived upstream variables, then start nginx.
-- Create `docker/nginx.conf.template`: nginx reverse proxy template with root-only routing, redacted runtime error logging, SNI hostname, upstream `Host`, and cleared client secret headers.
+- Create `docker/nginx.conf.template`: nginx reverse proxy template with root-only routing, client query string rejection, redacted runtime error logging, SNI hostname, upstream `Host`, and cleared client secret headers.
 - Create `Dockerfile`: build the nginx proxy image from a pinned nginx base image.
 - Create `docker-compose.example.yml`: local and VM deployment example.
 - Create `scripts/test-derive-upstream.sh`: shell test for URL derivation, invalid URL failures, unsafe nginx config characters including raw `$`, and TLS host separation.
 - Create `scripts/test-entrypoint.sh`: shell test for listen port validation and rendered nginx config hardening.
+- Create `scripts/test-nginx-routing.sh`: runtime Docker test proving root requests preserve configured upstream query strings, client query strings return 404 without forwarding, and non-root paths return 404.
 - Create `cloudflare/worker.mjs`: Cloudflare Worker Free proxy.
 - Create `cloudflare/worker.test.mjs`: Node built-in tests for the Worker proxy.
 - Create `cloudflare/container-worker.mjs`: Cloudflare Containers Paid Worker entrypoint.
@@ -134,13 +135,14 @@ Expected: commit succeeds. If the plan file is still being edited during executi
 - Create: `.dockerignore`
 - Create: `scripts/test-derive-upstream.sh`
 - Create: `scripts/test-entrypoint.sh`
+- Create: `scripts/test-nginx-routing.sh`
 - Create: `docker/derive-upstream.sh`
 - Create: `docker/docker-entrypoint.sh`
 - Create: `docker/nginx.conf.template`
 - Create: `Dockerfile`
 - Create: `docker-compose.example.yml`
 
-Supported nginx upstream hosts are DNS hostnames with an optional `:port`, such as `rpc-provider.invalid` or `rpc-provider.invalid:443`. IPv6 literal support is out of scope for this minimal proxy. Literal `$` characters in upstream URLs must be percent-encoded as `%24`; raw `$` is rejected because nginx treats it as a variable marker in `proxy_pass`.
+Supported nginx upstream hosts are DNS hostnames with an optional `:port`, such as `rpc-provider.invalid` or `rpc-provider.invalid:443`. IPv6 literal support is out of scope for this minimal proxy. Literal `$` characters in upstream URLs must be percent-encoded as `%24`; raw `$` is rejected because nginx treats it as a variable marker in `proxy_pass`. JSON-RPC clients POST to `/` with a request body; nginx rejects any client query string with 404 so client args cannot corrupt a configured upstream query URL.
 
 - [ ] **Step 1: Write the failing shell tests**
 
@@ -338,6 +340,8 @@ assert_port_failure "65536" "above-range-port"
 printf 'PASS entrypoint\n'
 ```
 
+Write `scripts/test-nginx-routing.sh` as a runtime Docker test that starts a local Node upstream server, runs the built `rpc-proxy-nginx:local` image with `RPC_UPSTREAM_URL=http://host.docker.internal:<local-port>/v2/key?auth=placeholder`, verifies `/` reaches upstream as exactly `/v2/key?auth=placeholder`, verifies `/?client=1` returns 404 without reaching upstream, and verifies `/foo` returns 404.
+
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run:
@@ -345,9 +349,11 @@ Run:
 ```bash
 bash scripts/test-derive-upstream.sh
 bash scripts/test-entrypoint.sh
+docker build -t rpc-proxy-nginx:local .
+bash scripts/test-nginx-routing.sh
 ```
 
-Expected: FAIL because unsafe nginx config characters, raw `$` in `RPC_UPSTREAM_URL`, invalid `RPC_PROXY_LISTEN_PORT` values, and cleared client secret headers are not handled yet.
+Expected: FAIL because unsafe nginx config characters, raw `$` in `RPC_UPSTREAM_URL`, invalid `RPC_PROXY_LISTEN_PORT` values, cleared client secret headers, and client query string rejection are not handled yet. The routing test should show `/?client=1` is forwarded before the nginx guard is added.
 
 - [ ] **Step 3: Implement upstream derivation**
 
@@ -451,6 +457,10 @@ http {
         listen ${RPC_PROXY_LISTEN_PORT};
 
         location = / {
+            if ($args != "") {
+                return 404;
+            }
+
             proxy_pass ${RPC_UPSTREAM_SCHEME}://${RPC_UPSTREAM_HOST}${RPC_UPSTREAM_PATH};
             proxy_ssl_server_name on;
             proxy_ssl_name ${RPC_UPSTREAM_TLS_HOST};
@@ -574,7 +584,7 @@ services:
       - "${RPC_PROXY_PUBLISHED_PORT:-8545}:${RPC_PROXY_LISTEN_PORT:-8545}"
 ```
 
-- [ ] **Step 7: Verify Docker config rendering**
+- [ ] **Step 7: Verify Docker config rendering and routing**
 
 Run:
 
@@ -591,6 +601,14 @@ docker build -t rpc-proxy-nginx:local .
 ```
 
 Expected: image builds successfully from `nginx:1.27.5-alpine`.
+
+Run:
+
+```bash
+bash scripts/test-nginx-routing.sh
+```
+
+Expected: `PASS nginx-routing`, proving root requests preserve the configured upstream query string, client query strings return 404 without forwarding, and non-root paths return 404.
 
 Run:
 
@@ -645,7 +663,7 @@ Expected: non-zero exit with `RPC_PROXY_LISTEN_PORT must be a number from 1 to 6
 Run:
 
 ```bash
-git add .dockerignore Dockerfile docker docker-compose.example.yml scripts/test-derive-upstream.sh scripts/test-entrypoint.sh docs/superpowers/plans/2026-05-11-rpc-proxy-deployment.md
+git add .dockerignore Dockerfile docker docker-compose.example.yml scripts/test-derive-upstream.sh scripts/test-entrypoint.sh scripts/test-nginx-routing.sh docs/superpowers/plans/2026-05-11-rpc-proxy-deployment.md
 git commit -m "fix: harden nginx proxy configuration"
 ```
 
@@ -1232,6 +1250,7 @@ npm test
 bash scripts/test-derive-upstream.sh
 bash scripts/test-entrypoint.sh
 docker build -t rpc-proxy-nginx:local .
+bash scripts/test-nginx-routing.sh
 unsafe_url_output="$(mktemp)"
 if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL='https://rpc-provider.invalid/v2/key?auth=$http_authorization' rpc-proxy-nginx:local nginx -t >"$unsafe_url_output" 2>&1; then
   printf 'expected unsafe RPC_UPSTREAM_URL to fail\n' >&2
@@ -1250,7 +1269,7 @@ npm run dry-run:worker:free
 npm run dry-run:containers
 ```
 
-The two Docker negative checks should exit non-zero with the unsafe upstream URL and listen port validation messages.
+The routing test should prove `/` forwards to the configured upstream path and query exactly, `/?client=1` returns 404 without forwarding, and `/foo` returns 404. The two Docker negative checks should exit non-zero with the unsafe upstream URL and listen port validation messages.
 
 Scan for accidental concrete RPC values before committing:
 
@@ -1279,6 +1298,7 @@ npm test
 bash scripts/test-derive-upstream.sh
 bash scripts/test-entrypoint.sh
 docker build -t rpc-proxy-nginx:local .
+bash scripts/test-nginx-routing.sh
 unsafe_url_output="$(mktemp)"
 if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL='https://rpc-provider.invalid/v2/key?auth=$http_authorization' rpc-proxy-nginx:local nginx -t >"$unsafe_url_output" 2>&1; then
   printf 'expected unsafe RPC_UPSTREAM_URL to fail\n' >&2
@@ -1305,6 +1325,7 @@ Expected:
 - `bash scripts/test-derive-upstream.sh` prints `PASS derive-upstream`.
 - `bash scripts/test-entrypoint.sh` prints `PASS entrypoint`.
 - Docker image builds.
+- `bash scripts/test-nginx-routing.sh` prints `PASS nginx-routing`.
 - Docker negative checks exit non-zero with `RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration` and `RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535`.
 - Wrangler dry-runs finish without deploying.
 - `rg` returns no matches for real provider hosts, real upstream URLs, or real route tokens.
@@ -1322,6 +1343,6 @@ Expected: commit succeeds.
 
 ## Self-Review Checklist
 
-- Spec coverage: nginx Docker, Cloudflare Worker Free, Cloudflare Containers Paid, one `RPC_UPSTREAM_URL`, secret path token, GET pass-through, no committed real URLs, SNI, nginx config input validation, client secret header clearing, and verification are covered.
+- Spec coverage: nginx Docker, Cloudflare Worker Free, Cloudflare Containers Paid, one `RPC_UPSTREAM_URL`, secret path token, GET pass-through, no committed real URLs, SNI, nginx config input validation, client query string rejection, client secret header clearing, and verification are covered.
 - Placeholder scan: the plan uses explicit placeholder values with `<...>` where secrets or account-specific values belong. It does not include a real upstream RPC URL or provider API key.
 - Type consistency: Worker env names are `RPC_UPSTREAM_URL` and `RPC_PROXY_PATH_TOKEN` throughout. Container binding is `RPC_PROXY_CONTAINER` throughout. nginx listen port is `8545` by default and validates `RPC_PROXY_LISTEN_PORT` before rendering.

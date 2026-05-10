@@ -8,6 +8,10 @@ http {
         listen ${RPC_PROXY_LISTEN_PORT};
 
         location = / {
+            if ($args != "") {
+                return 404;
+            }
+
             proxy_pass ${RPC_UPSTREAM_SCHEME}://${RPC_UPSTREAM_HOST}${RPC_UPSTREAM_PATH};
             proxy_ssl_server_name on;
             proxy_ssl_name ${RPC_UPSTREAM_TLS_HOST};
