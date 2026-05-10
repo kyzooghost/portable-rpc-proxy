@@ -1301,8 +1301,13 @@ The routing test should prove `/` forwards to the configured upstream path and q
 Scan for accidental concrete RPC values before committing:
 
 ```bash
-rg -n "RPC_UPSTREAM_URL=https://[^<]|RPC_PROXY_PATH_TOKEN=[^<]|/v2/[A-Za-z0-9_-]{10,}" \
-  .env.example Dockerfile docker docker-compose.example.yml cloudflare wrangler.free.example.toml wrangler.containers.example.toml package.json
+secret_pattern='RPC_UPSTREAM_URL=https:'
+secret_pattern="${secret_pattern}//"
+secret_pattern="${secret_pattern}[^<]|RPC_PROXY_PATH_TOKEN"
+secret_pattern="${secret_pattern}=[^<]|/v2/[A-Za-z0-9_-]{10,}"
+rg -n "$secret_pattern" \
+  .env.example Dockerfile docker docker-compose.example.yml cloudflare \
+  wrangler.free.example.toml wrangler.containers.example.toml package.json README.md
 ```
 
 Expected: no matches for real provider hosts, real upstream URLs, or real route tokens.
@@ -1354,8 +1359,13 @@ grep -F 'RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535' "$unsafe_port_o
 rm -f "$unsafe_port_output"
 npm run dry-run:worker:free
 npm run dry-run:containers
-rg -n "RPC_UPSTREAM_URL=https://[^<]|RPC_PROXY_PATH_TOKEN=[^<]|/v2/[A-Za-z0-9_-]{10,}" \
-  .env.example Dockerfile docker docker-compose.example.yml cloudflare wrangler.free.example.toml wrangler.containers.example.toml package.json
+secret_pattern='RPC_UPSTREAM_URL=https:'
+secret_pattern="${secret_pattern}//"
+secret_pattern="${secret_pattern}[^<]|RPC_PROXY_PATH_TOKEN"
+secret_pattern="${secret_pattern}=[^<]|/v2/[A-Za-z0-9_-]{10,}"
+rg -n "$secret_pattern" \
+  .env.example Dockerfile docker docker-compose.example.yml cloudflare \
+  wrangler.free.example.toml wrangler.containers.example.toml package.json README.md
 ```
 
 Expected:
