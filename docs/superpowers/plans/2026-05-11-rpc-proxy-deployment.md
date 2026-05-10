@@ -328,7 +328,7 @@ Expected: image builds successfully from `nginx:1.27.5-alpine`.
 Run:
 
 ```bash
-docker run --rm -e RPC_UPSTREAM_URL=https://rpc-provider.invalid/v2/key rpc-proxy-nginx:local nginx -t
+docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL=https://rpc-provider.invalid/v2/key rpc-proxy-nginx:local nginx -t
 ```
 
 Expected: `nginx: configuration file /etc/nginx/nginx.conf test is successful`.

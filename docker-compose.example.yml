@@ -1,0 +1,11 @@
+services:
+  rpc-proxy:
+    build:
+      context: .
+    image: rpc-proxy-nginx:local
+    restart: unless-stopped
+    environment:
+      RPC_UPSTREAM_URL: "${RPC_UPSTREAM_URL:?set RPC_UPSTREAM_URL in an uncommitted env file}"
+      RPC_PROXY_LISTEN_PORT: "${RPC_PROXY_LISTEN_PORT:-8545}"
+    ports:
+      - "${RPC_PROXY_PUBLISHED_PORT:-8545}:${RPC_PROXY_LISTEN_PORT:-8545}"
