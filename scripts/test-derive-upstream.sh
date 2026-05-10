@@ -52,5 +52,8 @@ assert_failure "ftp://rpc-provider.invalid/path" "RPC_UPSTREAM_URL must start wi
 assert_failure "https:///v2/key" "RPC_UPSTREAM_URL must include a host" "empty host"
 assert_failure "https://user:pass@rpc-provider.invalid/v2/key" "RPC_UPSTREAM_URL must not include userinfo" "userinfo"
 assert_failure "https://rpc-provider.invalid/v2/key#frag" "RPC_UPSTREAM_URL must not include a fragment" "fragment"
+assert_failure "https://rpc-provider.invalid/v2/key;error_log /dev/stdout info" "RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration" "nginx directive injection characters"
+assert_failure "https://rpc-provider.invalid/v2/key bad" "RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration" "nginx whitespace injection character"
+assert_failure "https://rpc-provider.invalid/v2/{key}" "RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration" "nginx brace injection characters"
 
 printf 'PASS derive-upstream\n'

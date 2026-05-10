@@ -4,7 +4,7 @@
 
 **Goal:** Build a minimal RPC proxy package with nginx Docker for VM deployment, Cloudflare Worker Free for no-Docker Cloudflare deployment, and Cloudflare Containers Paid as the Docker-on-Cloudflare path.
 
-**Architecture:** Keep `RPC_UPSTREAM_URL` as the single upstream input. nginx derives scheme, upstream authority, TLS hostname, and path/query at container startup so SNI and `Host` are correct. Cloudflare Worker Free forwards directly with `fetch()`, while Cloudflare Containers validates the same secret path token before forwarding to the nginx container.
+**Architecture:** Keep `RPC_UPSTREAM_URL` as the single upstream input. nginx validates values that are rendered into config before `envsubst`, derives scheme, upstream authority, TLS hostname, and path/query at container startup so SNI and `Host` are correct, and clears accidental client secret headers before forwarding. Cloudflare Worker Free forwards directly with `fetch()`, while Cloudflare Containers validates the same secret path token before forwarding to the nginx container.
 
 **Tech Stack:** Docker, `nginx:1.27.5-alpine`, POSIX shell, Node.js built-in test runner, Cloudflare Workers, Wrangler `4.90.0`, `@cloudflare/containers` `0.3.3`.
 
@@ -20,12 +20,13 @@ The current directory is not a git repository. If this project should have commi
 - Create `.dockerignore`: keep local secrets, dependencies, generated files, and git metadata out of Docker build context.
 - Create `.env.example`: document placeholder-only runtime variables.
 - Create `package.json`: pin Wrangler and Cloudflare Containers versions and provide test/deploy scripts.
-- Create `docker/derive-upstream.sh`: derive nginx scheme, upstream authority, TLS hostname, and path/query from `RPC_UPSTREAM_URL`.
-- Create `docker/docker-entrypoint.sh`: render nginx config with all derived upstream variables then start nginx.
-- Create `docker/nginx.conf.template`: nginx reverse proxy template with root-only routing, redacted runtime error logging, SNI hostname, and upstream `Host`.
+- Create `docker/derive-upstream.sh`: reject nginx config metacharacters, then derive nginx scheme, upstream authority, TLS hostname, and path/query from `RPC_UPSTREAM_URL`.
+- Create `docker/docker-entrypoint.sh`: validate `RPC_PROXY_LISTEN_PORT`, render nginx config with all derived upstream variables, then start nginx.
+- Create `docker/nginx.conf.template`: nginx reverse proxy template with root-only routing, redacted runtime error logging, SNI hostname, upstream `Host`, and cleared client secret headers.
 - Create `Dockerfile`: build the nginx proxy image from a pinned nginx base image.
 - Create `docker-compose.example.yml`: local and VM deployment example.
-- Create `scripts/test-derive-upstream.sh`: shell test for URL derivation, invalid URL failures, and TLS host separation.
+- Create `scripts/test-derive-upstream.sh`: shell test for URL derivation, invalid URL failures, unsafe nginx config characters, and TLS host separation.
+- Create `scripts/test-entrypoint.sh`: shell test for listen port validation and rendered nginx config hardening.
 - Create `cloudflare/worker.mjs`: Cloudflare Worker Free proxy.
 - Create `cloudflare/worker.test.mjs`: Node built-in tests for the Worker proxy.
 - Create `cloudflare/container-worker.mjs`: Cloudflare Containers Paid Worker entrypoint.
@@ -132,13 +133,14 @@ Expected: commit succeeds. If the plan file is still being edited during executi
 **Files:**
 - Create: `.dockerignore`
 - Create: `scripts/test-derive-upstream.sh`
+- Create: `scripts/test-entrypoint.sh`
 - Create: `docker/derive-upstream.sh`
 - Create: `docker/docker-entrypoint.sh`
 - Create: `docker/nginx.conf.template`
 - Create: `Dockerfile`
 - Create: `docker-compose.example.yml`
 
-- [ ] **Step 1: Write the failing shell test**
+- [ ] **Step 1: Write the failing shell tests**
 
 Write `scripts/test-derive-upstream.sh`:
 
@@ -197,8 +199,136 @@ assert_failure "ftp://rpc-provider.invalid/path" "RPC_UPSTREAM_URL must start wi
 assert_failure "https:///v2/key" "RPC_UPSTREAM_URL must include a host" "empty host"
 assert_failure "https://user:pass@rpc-provider.invalid/v2/key" "RPC_UPSTREAM_URL must not include userinfo" "userinfo"
 assert_failure "https://rpc-provider.invalid/v2/key#frag" "RPC_UPSTREAM_URL must not include a fragment" "fragment"
+assert_failure "https://rpc-provider.invalid/v2/key;error_log /dev/stdout info" "RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration" "nginx directive injection characters"
+assert_failure "https://rpc-provider.invalid/v2/key bad" "RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration" "nginx whitespace injection character"
+assert_failure "https://rpc-provider.invalid/v2/{key}" "RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration" "nginx brace injection characters"
 
 printf 'PASS derive-upstream\n'
+```
+
+Write `scripts/test-entrypoint.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SAFE_RPC_UPSTREAM_URL="https://rpc-provider.invalid/v2/key"
+PORT_ERROR_MESSAGE="RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535"
+
+assert_file_contains() {
+  local file="$1"
+  local expected="$2"
+  local label="$3"
+
+  if ! grep -F -q -- "$expected" "$file"; then
+    printf 'FAIL %s\nexpected to find: %s\n' "$label" "$expected" >&2
+    printf 'rendered config:\n' >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+fake_bin="$tmp_dir/bin"
+rendered_config="$tmp_dir/etc/nginx/nginx.conf"
+entrypoint="$tmp_dir/rpc-proxy-entrypoint.sh"
+
+mkdir -p "$fake_bin" "$tmp_dir/usr/local/bin" "$tmp_dir/etc/nginx/templates" "$tmp_dir/etc/nginx"
+cp docker/derive-upstream.sh "$tmp_dir/usr/local/bin/derive-upstream.sh"
+cp docker/nginx.conf.template "$tmp_dir/etc/nginx/templates/nginx.conf.template"
+
+cat > "$fake_bin/envsubst" <<'ENVSUBST'
+#!/bin/sh
+set -eu
+
+awk '{
+  gsub(/\$\{RPC_PROXY_LISTEN_PORT\}/, ENVIRON["RPC_PROXY_LISTEN_PORT"])
+  gsub(/\$\{RPC_UPSTREAM_SCHEME\}/, ENVIRON["RPC_UPSTREAM_SCHEME"])
+  gsub(/\$\{RPC_UPSTREAM_HOST\}/, ENVIRON["RPC_UPSTREAM_HOST"])
+  gsub(/\$\{RPC_UPSTREAM_TLS_HOST\}/, ENVIRON["RPC_UPSTREAM_TLS_HOST"])
+  gsub(/\$\{RPC_UPSTREAM_PATH\}/, ENVIRON["RPC_UPSTREAM_PATH"])
+  print
+}'
+ENVSUBST
+chmod 0755 "$fake_bin/envsubst"
+
+sed \
+  -e "s#/usr/local/bin/derive-upstream.sh#$tmp_dir/usr/local/bin/derive-upstream.sh#g" \
+  -e "s#/etc/nginx/templates/nginx.conf.template#$tmp_dir/etc/nginx/templates/nginx.conf.template#g" \
+  -e "s#/etc/nginx/nginx.conf#$rendered_config#g" \
+  docker/docker-entrypoint.sh > "$entrypoint"
+chmod 0755 "$entrypoint"
+
+run_entrypoint_with_port() {
+  local port="$1"
+  local label="$2"
+  local stdout_file="$tmp_dir/$label.stdout"
+  local stderr_file="$tmp_dir/$label.stderr"
+
+  rm -f "$rendered_config"
+
+  if ! RPC_UPSTREAM_URL="$SAFE_RPC_UPSTREAM_URL" RPC_PROXY_LISTEN_PORT="$port" PATH="$fake_bin:$PATH" "$entrypoint" true >"$stdout_file" 2>"$stderr_file"; then
+    printf 'FAIL %s unexpectedly failed\n' "$label" >&2
+    cat "$stderr_file" >&2
+    exit 1
+  fi
+}
+
+run_entrypoint_with_unset_port() {
+  local label="$1"
+  local stdout_file="$tmp_dir/$label.stdout"
+  local stderr_file="$tmp_dir/$label.stderr"
+
+  rm -f "$rendered_config"
+
+  if ! (
+    unset RPC_PROXY_LISTEN_PORT
+    export RPC_UPSTREAM_URL="$SAFE_RPC_UPSTREAM_URL"
+    export PATH="$fake_bin:$PATH"
+    "$entrypoint" true
+  ) >"$stdout_file" 2>"$stderr_file"; then
+    printf 'FAIL %s unexpectedly failed\n' "$label" >&2
+    cat "$stderr_file" >&2
+    exit 1
+  fi
+}
+
+assert_port_failure() {
+  local port="$1"
+  local label="$2"
+  local stdout_file="$tmp_dir/$label.stdout"
+  local stderr_file="$tmp_dir/$label.stderr"
+
+  if RPC_UPSTREAM_URL="$SAFE_RPC_UPSTREAM_URL" RPC_PROXY_LISTEN_PORT="$port" PATH="$fake_bin:$PATH" "$entrypoint" true >"$stdout_file" 2>"$stderr_file"; then
+    printf 'FAIL %s unexpectedly passed\n' "$label" >&2
+    exit 1
+  fi
+
+  if ! grep -F -q -- "$PORT_ERROR_MESSAGE" "$stderr_file"; then
+    printf 'FAIL %s error was not actionable\n' "$label" >&2
+    cat "$stderr_file" >&2
+    exit 1
+  fi
+}
+
+run_entrypoint_with_port "8545" "explicit-port"
+assert_file_contains "$rendered_config" "listen 8545;" "explicit safe listen port"
+assert_file_contains "$rendered_config" "proxy_pass https://rpc-provider.invalid/v2/key;" "explicit safe upstream URL"
+assert_file_contains "$rendered_config" 'proxy_set_header Authorization "";' "cleared authorization header"
+assert_file_contains "$rendered_config" 'proxy_set_header Proxy-Authorization "";' "cleared proxy authorization header"
+assert_file_contains "$rendered_config" 'proxy_set_header Cookie "";' "cleared cookie header"
+
+run_entrypoint_with_unset_port "default-port"
+assert_file_contains "$rendered_config" "listen 8545;" "default listen port"
+
+assert_port_failure "8545; error_log /dev/stdout info" "directive-injection-port"
+assert_port_failure "" "empty-port"
+assert_port_failure "0" "zero-port"
+assert_port_failure "65536" "above-range-port"
+
+printf 'PASS entrypoint\n'
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -207,9 +337,10 @@ Run:
 
 ```bash
 bash scripts/test-derive-upstream.sh
+bash scripts/test-entrypoint.sh
 ```
 
-Expected: FAIL because `RPC_UPSTREAM_TLS_HOST` is not derived yet and root-query URLs are not parsed correctly.
+Expected: FAIL because unsafe nginx config characters in `RPC_UPSTREAM_URL`, invalid `RPC_PROXY_LISTEN_PORT` values, and cleared client secret headers are not handled yet.
 
 - [ ] **Step 3: Implement upstream derivation**
 
@@ -220,6 +351,15 @@ Write `docker/derive-upstream.sh`:
 set -eu
 
 : "${RPC_UPSTREAM_URL:?RPC_UPSTREAM_URL is required}"
+
+UNSAFE_NGINX_CONFIG_MESSAGE='RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration'
+
+case "$RPC_UPSTREAM_URL" in
+  *";"*|*"{"*|*"}"*|*[[:space:]]*)
+    printf '%s\n' "$UNSAFE_NGINX_CONFIG_MESSAGE" >&2
+    exit 1
+    ;;
+esac
 
 case "$RPC_UPSTREAM_URL" in
   http://*|https://*) ;;
@@ -308,6 +448,9 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name ${RPC_UPSTREAM_TLS_HOST};
             proxy_set_header Host ${RPC_UPSTREAM_HOST};
+            proxy_set_header Authorization "";
+            proxy_set_header Proxy-Authorization "";
+            proxy_set_header Cookie "";
             proxy_pass_request_headers on;
             proxy_buffering off;
             proxy_request_buffering off;
@@ -328,7 +471,42 @@ set -eu
 
 . /usr/local/bin/derive-upstream.sh
 
-RPC_PROXY_LISTEN_PORT="${RPC_PROXY_LISTEN_PORT:-8545}"
+RPC_PROXY_LISTEN_PORT_ERROR='RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535'
+
+if [ "${RPC_PROXY_LISTEN_PORT+x}" != 'x' ]; then
+  RPC_PROXY_LISTEN_PORT=8545
+elif [ -z "$RPC_PROXY_LISTEN_PORT" ]; then
+  printf '%s\n' "$RPC_PROXY_LISTEN_PORT_ERROR" >&2
+  exit 1
+fi
+
+case "$RPC_PROXY_LISTEN_PORT" in
+  *[!0123456789]*)
+    printf '%s\n' "$RPC_PROXY_LISTEN_PORT_ERROR" >&2
+    exit 1
+    ;;
+esac
+
+RPC_PROXY_LISTEN_PORT_NUMBER="$RPC_PROXY_LISTEN_PORT"
+while [ "${RPC_PROXY_LISTEN_PORT_NUMBER#0}" != "$RPC_PROXY_LISTEN_PORT_NUMBER" ]; do
+  RPC_PROXY_LISTEN_PORT_NUMBER="${RPC_PROXY_LISTEN_PORT_NUMBER#0}"
+done
+
+if [ -z "$RPC_PROXY_LISTEN_PORT_NUMBER" ]; then
+  printf '%s\n' "$RPC_PROXY_LISTEN_PORT_ERROR" >&2
+  exit 1
+fi
+
+if [ "${#RPC_PROXY_LISTEN_PORT_NUMBER}" -gt 5 ]; then
+  printf '%s\n' "$RPC_PROXY_LISTEN_PORT_ERROR" >&2
+  exit 1
+fi
+
+if [ "${#RPC_PROXY_LISTEN_PORT_NUMBER}" -eq 5 ] && [ "$RPC_PROXY_LISTEN_PORT_NUMBER" \> '65535' ]; then
+  printf '%s\n' "$RPC_PROXY_LISTEN_PORT_ERROR" >&2
+  exit 1
+fi
+
 export RPC_PROXY_LISTEN_PORT
 
 envsubst '${RPC_PROXY_LISTEN_PORT} ${RPC_UPSTREAM_SCHEME} ${RPC_UPSTREAM_HOST} ${RPC_UPSTREAM_TLS_HOST} ${RPC_UPSTREAM_PATH}' \
@@ -394,6 +572,14 @@ services:
 Run:
 
 ```bash
+bash scripts/test-entrypoint.sh
+```
+
+Expected: `PASS entrypoint`.
+
+Run:
+
+```bash
 docker build -t rpc-proxy-nginx:local .
 ```
 
@@ -431,12 +617,28 @@ docker run --rm rpc-proxy-nginx:local nginx -t
 
 Expected: non-zero exit with `RPC_UPSTREAM_URL is required`.
 
+Run:
+
+```bash
+docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL='https://rpc-provider.invalid/v2/key;error_log /dev/stdout info' rpc-proxy-nginx:local nginx -t
+```
+
+Expected: non-zero exit with `RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration`.
+
+Run:
+
+```bash
+docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL=https://rpc-provider.invalid/v2/key -e 'RPC_PROXY_LISTEN_PORT=8545; error_log /dev/stdout info' rpc-proxy-nginx:local nginx -t
+```
+
+Expected: non-zero exit with `RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535`.
+
 - [ ] **Step 8: Commit nginx proxy files**
 
 Run:
 
 ```bash
-git add .dockerignore Dockerfile docker docker-compose.example.yml scripts/test-derive-upstream.sh docs/superpowers/plans/2026-05-11-rpc-proxy-deployment.md
+git add .dockerignore Dockerfile docker docker-compose.example.yml scripts/test-derive-upstream.sh scripts/test-entrypoint.sh docs/superpowers/plans/2026-05-11-rpc-proxy-deployment.md
 git commit -m "fix: harden nginx proxy configuration"
 ```
 
@@ -1021,10 +1223,27 @@ Run local tests:
 ```bash
 npm test
 bash scripts/test-derive-upstream.sh
+bash scripts/test-entrypoint.sh
 docker build -t rpc-proxy-nginx:local .
+unsafe_url_output="$(mktemp)"
+if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL='https://rpc-provider.invalid/v2/key;error_log /dev/stdout info' rpc-proxy-nginx:local nginx -t >"$unsafe_url_output" 2>&1; then
+  printf 'expected unsafe RPC_UPSTREAM_URL to fail\n' >&2
+  exit 1
+fi
+grep -F 'RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration' "$unsafe_url_output"
+rm -f "$unsafe_url_output"
+unsafe_port_output="$(mktemp)"
+if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL=https://rpc-provider.invalid/v2/key -e 'RPC_PROXY_LISTEN_PORT=8545; error_log /dev/stdout info' rpc-proxy-nginx:local nginx -t >"$unsafe_port_output" 2>&1; then
+  printf 'expected unsafe RPC_PROXY_LISTEN_PORT to fail\n' >&2
+  exit 1
+fi
+grep -F 'RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535' "$unsafe_port_output"
+rm -f "$unsafe_port_output"
 npm run dry-run:worker:free
 npm run dry-run:containers
 ```
+
+The two Docker negative checks should exit non-zero with the unsafe upstream URL and listen port validation messages.
 
 Scan for accidental concrete RPC values before committing:
 
@@ -1051,7 +1270,22 @@ Run:
 ```bash
 npm test
 bash scripts/test-derive-upstream.sh
+bash scripts/test-entrypoint.sh
 docker build -t rpc-proxy-nginx:local .
+unsafe_url_output="$(mktemp)"
+if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL='https://rpc-provider.invalid/v2/key;error_log /dev/stdout info' rpc-proxy-nginx:local nginx -t >"$unsafe_url_output" 2>&1; then
+  printf 'expected unsafe RPC_UPSTREAM_URL to fail\n' >&2
+  exit 1
+fi
+grep -F 'RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration' "$unsafe_url_output"
+rm -f "$unsafe_url_output"
+unsafe_port_output="$(mktemp)"
+if docker run --rm --add-host rpc-provider.invalid:127.0.0.1 -e RPC_UPSTREAM_URL=https://rpc-provider.invalid/v2/key -e 'RPC_PROXY_LISTEN_PORT=8545; error_log /dev/stdout info' rpc-proxy-nginx:local nginx -t >"$unsafe_port_output" 2>&1; then
+  printf 'expected unsafe RPC_PROXY_LISTEN_PORT to fail\n' >&2
+  exit 1
+fi
+grep -F 'RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535' "$unsafe_port_output"
+rm -f "$unsafe_port_output"
 npm run dry-run:worker:free
 npm run dry-run:containers
 rg -n "RPC_UPSTREAM_URL=https://[^<]|RPC_PROXY_PATH_TOKEN=[^<]|/v2/[A-Za-z0-9_-]{10,}" \
@@ -1062,7 +1296,9 @@ Expected:
 
 - `npm test` passes.
 - `bash scripts/test-derive-upstream.sh` prints `PASS derive-upstream`.
+- `bash scripts/test-entrypoint.sh` prints `PASS entrypoint`.
 - Docker image builds.
+- Docker negative checks exit non-zero with `RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration` and `RPC_PROXY_LISTEN_PORT must be a number from 1 to 65535`.
 - Wrangler dry-runs finish without deploying.
 - `rg` returns no matches for real provider hosts, real upstream URLs, or real route tokens.
 
@@ -1079,6 +1315,6 @@ Expected: commit succeeds.
 
 ## Self-Review Checklist
 
-- Spec coverage: nginx Docker, Cloudflare Worker Free, Cloudflare Containers Paid, one `RPC_UPSTREAM_URL`, secret path token, GET pass-through, no committed real URLs, SNI, and verification are covered.
+- Spec coverage: nginx Docker, Cloudflare Worker Free, Cloudflare Containers Paid, one `RPC_UPSTREAM_URL`, secret path token, GET pass-through, no committed real URLs, SNI, nginx config input validation, client secret header clearing, and verification are covered.
 - Placeholder scan: the plan uses explicit placeholder values with `<...>` where secrets or account-specific values belong. It does not include a real upstream RPC URL or provider API key.
-- Type consistency: Worker env names are `RPC_UPSTREAM_URL` and `RPC_PROXY_PATH_TOKEN` throughout. Container binding is `RPC_PROXY_CONTAINER` throughout. nginx listen port is `8545` by default.
+- Type consistency: Worker env names are `RPC_UPSTREAM_URL` and `RPC_PROXY_PATH_TOKEN` throughout. Container binding is `RPC_PROXY_CONTAINER` throughout. nginx listen port is `8545` by default and validates `RPC_PROXY_LISTEN_PORT` before rendering.

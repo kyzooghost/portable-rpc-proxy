@@ -3,6 +3,15 @@ set -eu
 
 : "${RPC_UPSTREAM_URL:?RPC_UPSTREAM_URL is required}"
 
+UNSAFE_NGINX_CONFIG_MESSAGE='RPC_UPSTREAM_URL contains characters that are unsafe for nginx configuration'
+
+case "$RPC_UPSTREAM_URL" in
+  *";"*|*"{"*|*"}"*|*[[:space:]]*)
+    printf '%s\n' "$UNSAFE_NGINX_CONFIG_MESSAGE" >&2
+    exit 1
+    ;;
+esac
+
 case "$RPC_UPSTREAM_URL" in
   http://*|https://*) ;;
   *)
