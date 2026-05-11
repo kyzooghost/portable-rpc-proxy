@@ -87,6 +87,12 @@ RPC_UPSTREAM_URL=https://<rpc-provider-host>/<provider-api-path>
 RPC_PROXY_PATH_TOKEN=<long-random-route-token>
 ```
 
+Generate a route token for `RPC_PROXY_PATH_TOKEN`:
+
+```bash
+make rpc-proxy-path-token
+```
+
 Deploy once with the secrets file so both secrets are uploaded with the Worker version:
 
 ```bash
@@ -195,7 +201,7 @@ secret_pattern="${secret_pattern}//"
 secret_pattern="${secret_pattern}[^<]|RPC_PROXY_PATH_TOKEN"
 secret_pattern="${secret_pattern}=[^<]|/v2/[A-Za-z0-9_-]{10,}"
 rg -n "$secret_pattern" \
-  .env.example Dockerfile docker docker-compose.example.yml cloudflare \
+  .env.example Dockerfile Makefile docker docker-compose.example.yml cloudflare \
   wrangler.free.example.toml wrangler.containers.example.toml package.json README.md
 ```
 
