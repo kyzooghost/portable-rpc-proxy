@@ -1,0 +1,10 @@
+name = "base-rpc"
+main = "cloudflare/worker.mjs"
+compatibility_date = "2026-05-11"
+workers_dev = true
+
+[secrets]
+required = ["RPC_UPSTREAM_URL", "RPC_PROXY_PATH_TOKEN"]
+
+# First deploy can upload both sensitive values atomically with:
+# npx wrangler deploy --config wrangler.base.toml --secrets-file .env.cloudflare.base.free
