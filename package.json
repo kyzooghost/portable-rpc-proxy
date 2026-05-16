@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test cloudflare/*.test.mjs",
+    "test": "node --test cloudflare/*.test.mjs scripts/*.test.mjs",
     "deploy:worker:free": "wrangler deploy --config wrangler.free.example.toml",
     "deploy:containers": "wrangler deploy --config wrangler.containers.example.toml",
     "dry-run:worker:free": "wrangler deploy --dry-run --config wrangler.free.example.toml",

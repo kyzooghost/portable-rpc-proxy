@@ -80,7 +80,41 @@ ETH_RPC_URL=http://<vm-host-or-ip>:8545
 
 ## Cloudflare Worker Free
 
-This path deploys `cloudflare/worker.mjs` and does not use Docker. For the first deploy, put both Cloudflare secrets in an uncommitted `.env.cloudflare.free` file:
+This path deploys `cloudflare/worker.mjs` and does not use Docker.
+
+For stateless deploys, pass only the upstream URL. The command derives a deterministic Worker name from the upstream URL, generates a fresh route token, uploads both Cloudflare secrets through a temporary secrets file, and prints the client RPC URL:
+
+```bash
+make cloudflare-free-deploy RPC_UPSTREAM_URL=https://<rpc-provider-host>/<provider-api-path>
+```
+
+Example output:
+
+```dotenv
+ETH_RPC_URL=https://rpc-proxy-<8-hex-chars>.<workers-dev-subdomain>.workers.dev/rpc/<generated-route-token>
+```
+
+The deploy command tries to read the workers.dev base URL from Wrangler output. If Wrangler output does not include the URL, set this optional fallback once in your shell:
+
+```bash
+export CLOUDFLARE_WORKERS_DEV_SUBDOMAIN=<workers-dev-subdomain>
+```
+
+Inspect the derived non-secret Worker values without deploying:
+
+```bash
+make cloudflare-free-info RPC_UPSTREAM_URL=https://<rpc-provider-host>/<provider-api-path>
+```
+
+Delete the Worker derived from the same upstream URL:
+
+```bash
+make cloudflare-free-delete RPC_UPSTREAM_URL=https://<rpc-provider-host>/<provider-api-path>
+```
+
+Workers can also be deleted manually in the Cloudflare dashboard under Workers & Pages. The Make target is the repeatable path because it derives the same Worker name from the same upstream URL.
+
+The manual secrets-file flow remains available. For the first manual deploy, put both Cloudflare secrets in an uncommitted `.env.cloudflare.free` file:
 
 ```dotenv
 RPC_UPSTREAM_URL=https://<rpc-provider-host>/<provider-api-path>
@@ -201,7 +235,7 @@ secret_pattern="${secret_pattern}//"
 secret_pattern="${secret_pattern}[^<]|RPC_PROXY_PATH_TOKEN"
 secret_pattern="${secret_pattern}=[^<]|/v2/[A-Za-z0-9_-]{10,}"
 rg -n "$secret_pattern" \
-  .env.example Dockerfile Makefile docker docker-compose.example.yml cloudflare \
+  .env.example Dockerfile Makefile docker docker-compose.example.yml cloudflare scripts \
   wrangler.free.example.toml wrangler.containers.example.toml package.json README.md
 ```
 
