@@ -35,7 +35,6 @@ const CONTAINER = Object.freeze({
 
 const ROUTE = Object.freeze({
   containerPath: "/",
-  emptySearch: "",
   prefix: "/rpc/",
 });
 
@@ -96,7 +95,6 @@ function stripForwardHeaders(headers) {
 function buildContainerRequest(request) {
   const containerUrl = new URL(request.url);
   containerUrl.pathname = ROUTE.containerPath;
-  containerUrl.search = ROUTE.emptySearch;
 
   const containerRequest = new Request(containerUrl.toString(), request);
 
@@ -125,7 +123,7 @@ export async function handleContainerRequest(request, env, dependencies = {}) {
   }
 
   const requestUrl = new URL(request.url);
-  if (requestUrl.pathname !== expectedPath(pathToken) || requestUrl.search !== ROUTE.emptySearch) {
+  if (requestUrl.pathname !== expectedPath(pathToken)) {
     return new Response(RESPONSE_TEXT.notFound, { status: HTTP_STATUS.notFound });
   }
 

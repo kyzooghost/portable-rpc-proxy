@@ -4,6 +4,15 @@ http {
     access_log off;
     error_log /dev/null crit;
 
+    map $args $rpc_client_query_suffix {
+        "" "";
+        default "${RPC_CLIENT_QUERY_SEPARATOR}$args";
+    }
+
+    upstream rpc_proxy_upstream {
+        server ${RPC_UPSTREAM_CONNECT_HOST};
+    }
+
     server {
         listen ${RPC_PROXY_LISTEN_PORT};
 
@@ -16,11 +25,7 @@ http {
                 return 204;
             }
 
-            if ($args != "") {
-                return 404;
-            }
-
-            proxy_pass ${RPC_UPSTREAM_SCHEME}://${RPC_UPSTREAM_HOST}${RPC_UPSTREAM_PATH};
+            proxy_pass ${RPC_UPSTREAM_SCHEME}://rpc_proxy_upstream${RPC_UPSTREAM_PATH}$rpc_client_query_suffix;
             proxy_ssl_server_name on;
             proxy_ssl_name ${RPC_UPSTREAM_TLS_HOST};
             proxy_set_header Host ${RPC_UPSTREAM_HOST};

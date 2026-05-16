@@ -13,7 +13,7 @@ assert_equals() {
 }
 
 derive() {
-  RPC_UPSTREAM_URL="$1" sh -c '. ./docker/derive-upstream.sh; printf "%s|%s|%s|%s\n" "$RPC_UPSTREAM_SCHEME" "$RPC_UPSTREAM_HOST" "${RPC_UPSTREAM_TLS_HOST-}" "$RPC_UPSTREAM_PATH"'
+  RPC_UPSTREAM_URL="$1" sh -c '. ./docker/derive-upstream.sh; printf "%s|%s|%s|%s|%s|%s\n" "$RPC_UPSTREAM_SCHEME" "$RPC_UPSTREAM_HOST" "$RPC_UPSTREAM_CONNECT_HOST" "${RPC_UPSTREAM_TLS_HOST-}" "$RPC_UPSTREAM_PATH" "$RPC_CLIENT_QUERY_SEPARATOR"'
 }
 
 assert_failure() {
@@ -49,11 +49,11 @@ printf -v DNS_LABEL_63 '%*s' 63 ''
 DNS_LABEL_63="${DNS_LABEL_63// /a}"
 OVERLENGTH_DNS_HOSTNAME="${DNS_LABEL_63}.${DNS_LABEL_63}.${DNS_LABEL_63}.${DNS_LABEL_63}"
 
-assert_equals "https|rpc-provider.invalid|rpc-provider.invalid|/v2/key" "$(derive "https://rpc-provider.invalid/v2/key")" "https URL with path"
-assert_equals "http|rpc-provider.invalid|rpc-provider.invalid|/" "$(derive "http://rpc-provider.invalid")" "http URL without path"
-assert_equals "https|rpc-provider.invalid|rpc-provider.invalid|/v2/key?chain=mainnet" "$(derive "https://rpc-provider.invalid/v2/key?chain=mainnet")" "https URL with path and query"
-assert_equals "https|rpc-provider.invalid|rpc-provider.invalid|/?api_key=key" "$(derive "https://rpc-provider.invalid?api_key=key")" "https root URL with query"
-assert_equals "https|rpc-provider.invalid:443|rpc-provider.invalid|/v2/key" "$(derive "https://rpc-provider.invalid:443/v2/key")" "https URL with port"
+assert_equals "https|rpc-provider.invalid|rpc-provider.invalid:443|rpc-provider.invalid|/v2/key|?" "$(derive "https://rpc-provider.invalid/v2/key")" "https URL with path"
+assert_equals "http|rpc-provider.invalid|rpc-provider.invalid:80|rpc-provider.invalid|/|?" "$(derive "http://rpc-provider.invalid")" "http URL without path"
+assert_equals "https|rpc-provider.invalid|rpc-provider.invalid:443|rpc-provider.invalid|/v2/key?chain=mainnet|&" "$(derive "https://rpc-provider.invalid/v2/key?chain=mainnet")" "https URL with path and query"
+assert_equals "https|rpc-provider.invalid|rpc-provider.invalid:443|rpc-provider.invalid|/?api_key=key|&" "$(derive "https://rpc-provider.invalid?api_key=key")" "https root URL with query"
+assert_equals "https|rpc-provider.invalid:443|rpc-provider.invalid:443|rpc-provider.invalid|/v2/key|?" "$(derive "https://rpc-provider.invalid:443/v2/key")" "https URL with port"
 
 assert_failure "ftp://rpc-provider.invalid/path" "RPC_UPSTREAM_URL must start with http:// or https://" "invalid scheme"
 assert_failure "https:///v2/key" "RPC_UPSTREAM_URL must include a host" "empty host"

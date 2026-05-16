@@ -42,21 +42,20 @@ test("rejects requests to the wrong path without forwarding", async () => {
   assert.equal(fetchCalled, false);
 });
 
-test("rejects requests with a query string without forwarding", async () => {
-  let fetchCalled = false;
-  const request = new Request("https://proxy.invalid/rpc/test-route-token?client=1", {
+test("appends request query parameters to the configured upstream URL", async () => {
+  const request = new Request("https://proxy.invalid/rpc/test-route-token?client=1&client=2", {
     method: "POST",
     body: "{}",
   });
+  let forwardedRequest;
 
-  const response = await handleRequest(request, ENV, async () => {
-    fetchCalled = true;
-    return new Response("unexpected");
+  const response = await handleRequest(request, { ...ENV, RPC_UPSTREAM_URL: `${ENV.RPC_UPSTREAM_URL}?existing=1` }, async (upstreamRequest) => {
+    forwardedRequest = upstreamRequest;
+    return new Response("upstream response");
   });
 
-  assert.equal(response.status, 404);
-  assert.equal(await response.text(), "Not found");
-  assert.equal(fetchCalled, false);
+  assert.equal(response.status, 200);
+  assert.equal(forwardedRequest.url, `${ENV.RPC_UPSTREAM_URL}?existing=1&client=1&client=2`);
 });
 
 test("forwards POST body to configured upstream URL", async () => {

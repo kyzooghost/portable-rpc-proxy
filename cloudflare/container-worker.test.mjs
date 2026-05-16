@@ -68,8 +68,8 @@ test("rejects requests to the wrong path without starting a container", async ()
   assert.equal(getContainerCalled, false);
 });
 
-test("rejects requests with a query string without starting a container", async () => {
-  let getContainerCalled = false;
+test("forwards request query parameters to the container root", async () => {
+  const { calls, container } = createContainerMock();
   const request = new Request("https://proxy.invalid/rpc/test-route-token?client=1", {
     method: "POST",
     body: "{}",
@@ -77,14 +77,12 @@ test("rejects requests with a query string without starting a container", async 
 
   const response = await handleContainerRequest(request, ENV, {
     getContainerImpl() {
-      getContainerCalled = true;
-      throw new Error("unexpected container lookup");
+      return container;
     },
   });
 
-  assert.equal(response.status, 404);
-  assert.equal(await response.text(), "Not found");
-  assert.equal(getContainerCalled, false);
+  assert.equal(response.status, 200);
+  assert.equal(calls.fetchRequest.url, "https://proxy.invalid/?client=1");
 });
 
 test("returns config errors when required secrets are missing", async () => {

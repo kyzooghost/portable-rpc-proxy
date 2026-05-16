@@ -14,7 +14,7 @@ Minimal JSON-RPC proxy for environments where direct RPC provider subdomain acce
 - Use `RPC_UPSTREAM_URL` as the only upstream input. Set it from an uncommitted `.env` file for Docker or from Cloudflare secrets for Worker deployments.
 - Store both `RPC_UPSTREAM_URL` and `RPC_PROXY_PATH_TOKEN` as Cloudflare secrets. Do not put either value in Wrangler config.
 - The nginx entrypoint rejects unsafe `RPC_UPSTREAM_URL` and `RPC_PROXY_LISTEN_PORT` values before rendering nginx config.
-- nginx only accepts root path requests, rejects client query strings, and returns `404` for non-root paths so client input cannot alter a configured upstream path or query.
+- nginx only accepts root path requests and returns `404` for non-root paths. Client query strings on root requests are appended after any query string already present in `RPC_UPSTREAM_URL`.
 - nginx returns `204` for Cloudflare Containers health probes using `Host: ping` or `Host: containerstarthealthcheck` without forwarding to the upstream RPC provider.
 - Worker-based routes use `/rpc/<route-token>`. The Worker layer strips forwarding, client-IP metadata, and sensitive client headers before forwarding. nginx clears accidental client `Authorization`, `Proxy-Authorization`, and `Cookie` headers before forwarding upstream.
 
@@ -141,7 +141,7 @@ Set local clients to the Worker route:
 ETH_RPC_URL=https://<worker-domain>/rpc/<route-token>
 ```
 
-The Worker validates the path token, rejects query strings, forwards matching requests to the configured upstream URL, preserves upstream status and body, returns generic `502` text for upstream fetch failures, and strips hop-by-hop, forwarding, client-IP metadata, and sensitive client headers.
+The Worker validates the path token, appends any client query string to the configured upstream URL, forwards matching requests, preserves upstream status and body, returns generic `502` text for upstream fetch failures, and strips hop-by-hop, forwarding, client-IP metadata, and sensitive client headers.
 
 Cloudflare documents Workers Free with a 100,000 requests per day limit and 10 ms CPU time per request. Cloudflare also documents that network wait time for `fetch()` calls does not count toward CPU time.
 
@@ -170,7 +170,7 @@ Set local clients to the Containers-backed Worker route:
 ETH_RPC_URL=https://<worker-domain>/rpc/<route-token>
 ```
 
-The Containers Worker validates `/rpc/<route-token>`, rejects query strings before container startup, strips client-IP, forwarding, Cloudflare container routing, and sensitive client headers, then forwards the request to nginx at `/`.
+The Containers Worker validates `/rpc/<route-token>`, strips client-IP, forwarding, Cloudflare container routing, and sensitive client headers, then forwards the request to nginx at `/` with any client query string preserved.
 
 ## Verification
 

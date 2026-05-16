@@ -23,6 +23,8 @@ const BODYLESS_METHODS = new Set(["GET", "HEAD"]);
 
 const ROUTE = Object.freeze({
   emptySearch: "",
+  searchPrefix: "?",
+  searchSeparator: "&",
 });
 
 const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
@@ -97,7 +99,23 @@ function copyForwardHeaders(headers) {
   return forwardedHeaders;
 }
 
-export async function buildUpstreamRequest(request, upstreamUrl) {
+function appendRequestSearch(upstreamUrl, requestSearch) {
+  if (requestSearch === ROUTE.emptySearch) {
+    return upstreamUrl;
+  }
+
+  const upstream = new URL(upstreamUrl);
+  const clientQuery = requestSearch.startsWith(ROUTE.searchPrefix) ? requestSearch.slice(1) : requestSearch;
+
+  if (clientQuery.length === 0) {
+    return upstreamUrl;
+  }
+
+  const separator = upstream.search === ROUTE.emptySearch ? ROUTE.searchPrefix : ROUTE.searchSeparator;
+  return `${upstreamUrl}${separator}${clientQuery}`;
+}
+
+export async function buildUpstreamRequest(request, upstreamUrl, requestSearch = ROUTE.emptySearch) {
   const init = {
     method: request.method,
     headers: copyForwardHeaders(request.headers),
@@ -108,7 +126,7 @@ export async function buildUpstreamRequest(request, upstreamUrl) {
     init.body = await request.arrayBuffer();
   }
 
-  return new Request(upstreamUrl, init);
+  return new Request(appendRequestSearch(upstreamUrl, requestSearch), init);
 }
 
 export async function handleRequest(request, env, fetchImpl = fetch) {
@@ -128,12 +146,12 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   }
 
   const requestUrl = new URL(request.url);
-  if (requestUrl.pathname !== expectedPath(pathToken) || requestUrl.search !== ROUTE.emptySearch) {
+  if (requestUrl.pathname !== expectedPath(pathToken)) {
     return new Response(RESPONSE_TEXT.notFound, { status: HTTP_STATUS.notFound });
   }
 
   try {
-    const upstreamRequest = await buildUpstreamRequest(request, upstreamUrl);
+    const upstreamRequest = await buildUpstreamRequest(request, upstreamUrl, requestUrl.search);
     return await fetchImpl(upstreamRequest);
   } catch {
     return new Response(RESPONSE_TEXT.badGateway, { status: HTTP_STATUS.badGateway });

@@ -187,12 +187,13 @@ assert_equals "204" "$container_start_status" "container start health probe stat
 assert_equals "$before_health_probe_count" "$(line_count)" "container start health probe upstream count"
 
 before_query_count="$(line_count)"
-query_status="$(request_status "http://127.0.0.1:$published_port/?client=1" "query-request")"
-assert_equals "404" "$query_status" "client query request status"
-assert_equals "$before_query_count" "$(line_count)" "client query upstream count"
+query_status="$(request_status "http://127.0.0.1:$published_port/?client=1&client=2" "query-request")"
+assert_equals "200" "$query_status" "client query request status"
+assert_equals "$((before_query_count + 1))" "$(line_count)" "client query upstream count"
+assert_equals "/v2/key?auth=placeholder&client=1&client=2" "$(sed -n '2p' "$url_log")" "client query upstream URL"
 
 foo_status="$(request_status "http://127.0.0.1:$published_port/foo" "foo-request")"
 assert_equals "404" "$foo_status" "non-root request status"
-assert_equals "$before_query_count" "$(line_count)" "non-root request upstream count"
+assert_equals "$((before_query_count + 1))" "$(line_count)" "non-root request upstream count"
 
 printf 'PASS nginx-routing\n'

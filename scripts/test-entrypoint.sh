@@ -36,8 +36,10 @@ awk '{
   gsub(/\$\{RPC_PROXY_LISTEN_PORT\}/, ENVIRON["RPC_PROXY_LISTEN_PORT"])
   gsub(/\$\{RPC_UPSTREAM_SCHEME\}/, ENVIRON["RPC_UPSTREAM_SCHEME"])
   gsub(/\$\{RPC_UPSTREAM_HOST\}/, ENVIRON["RPC_UPSTREAM_HOST"])
+  gsub(/\$\{RPC_UPSTREAM_CONNECT_HOST\}/, ENVIRON["RPC_UPSTREAM_CONNECT_HOST"])
   gsub(/\$\{RPC_UPSTREAM_TLS_HOST\}/, ENVIRON["RPC_UPSTREAM_TLS_HOST"])
   gsub(/\$\{RPC_UPSTREAM_PATH\}/, ENVIRON["RPC_UPSTREAM_PATH"])
+  gsub(/\$\{RPC_CLIENT_QUERY_SEPARATOR\}/, ENVIRON["RPC_CLIENT_QUERY_SEPARATOR"])
   print
 }'
 ENVSUBST
@@ -104,7 +106,9 @@ assert_port_failure() {
 
 run_entrypoint_with_port "8545" "explicit-port"
 assert_file_contains "$rendered_config" "listen 8545;" "explicit safe listen port"
-assert_file_contains "$rendered_config" "proxy_pass https://rpc-provider.invalid/v2/key;" "explicit safe upstream URL"
+assert_file_contains "$rendered_config" 'default "?$args";' "client query separator for upstream URL without query"
+assert_file_contains "$rendered_config" "server rpc-provider.invalid:443;" "explicit safe upstream connection authority"
+assert_file_contains "$rendered_config" 'proxy_pass https://rpc_proxy_upstream/v2/key$rpc_client_query_suffix;' "explicit safe upstream URL"
 assert_file_contains "$rendered_config" 'proxy_set_header Authorization "";' "cleared authorization header"
 assert_file_contains "$rendered_config" 'proxy_set_header Proxy-Authorization "";' "cleared proxy authorization header"
 assert_file_contains "$rendered_config" 'proxy_set_header Cookie "";' "cleared cookie header"
